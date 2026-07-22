@@ -54,9 +54,12 @@ type this context cannot support:
    given, the judgment is tested.
 5. Ripple (hard difficulty only): given the dependencies shown, where would
    a failure in one of {name}'s collaborators surface, and why there?
+6. Trace: pick a small concrete input and ask what this code returns or does
+   with it — every option must be a concrete value or outcome, and the
+   SOURCE must fully determine the answer.
 
-DIFFICULTY: {difficulty} — medium prefers types 1, 2 and 4; hard prefers
-types 3 and 5 with design trade-offs.
+DIFFICULTY: {difficulty} — medium prefers types 1, 2, 4 and 6; hard prefers
+types 3, 5 and 6 with design trade-offs.
 
 RULES — every question must pass all five:
 - Grounded: the correct answer is provable from the SOURCE and CODE CONTEXT
@@ -403,6 +406,102 @@ def build_cloze_question(
     )
 
 
+# Textual mutations for spot-the-alteration questions. Plain substring pairs
+# applied once — no AST, language-agnostic, plausible by design.
+_MUTATION_RULES: tuple[tuple[str, str], ...] = (
+    (" == ", " != "),
+    (" != ", " == "),
+    (" >= ", " <= "),
+    (" <= ", " >= "),
+    (" and ", " or "),
+    (" or ", " and "),
+    ("&&", "||"),
+    ("||", "&&"),
+    ("max(", "min("),
+    ("min(", "max("),
+    ("True", "False"),
+    ("False", "True"),
+    (" += ", " -= "),
+    (" -= ", " += "),
+    (" + ", " - "),
+    (" - ", " + "),
+)
+
+
+def _mutate_line(line: str, rng: random.Random) -> Optional[str]:
+    rules = list(_MUTATION_RULES)
+    rng.shuffle(rules)
+    for old, new in rules:
+        if old in line:
+            return line.replace(old, new, 1)
+    return None
+
+
+def build_mutant_question(
+    node: dict,
+    snippet: str,
+    difficulty: str,
+    rng: Optional[random.Random] = None,
+) -> Optional[Question]:
+    """Spot-the-alteration over real source — zero LLM calls, truth by construction.
+
+    One line is silently altered (operator flip, and/or swap, boundary
+    change); the developer must recognize which shown line is not what
+    their code really does. The answer key cannot be wrong: we made the
+    alteration ourselves.
+    """
+    rng = rng or random.Random()
+    lines = snippet.splitlines()[:MAX_DISPLAY_SNIPPET_LINES]
+
+    mutable = []
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if len(stripped) < 10 or stripped.startswith(_CLOZE_SKIP_PREFIXES):
+            continue
+        mutated = _mutate_line(line, rng)
+        if mutated is not None and mutated != line:
+            mutable.append((index, mutated))
+    if not mutable:
+        return None
+    index, mutated_line = rng.choice(mutable)
+
+    shown = [*lines]
+    shown[index] = mutated_line
+    correct_norm = " ".join(mutated_line.split())
+
+    distractor_pool = []
+    for j, line in enumerate(shown):
+        if j == index:
+            continue
+        stripped = line.strip()
+        if len(stripped) < 10 or stripped.startswith(_CLOZE_SKIP_PREFIXES):
+            continue
+        norm = " ".join(stripped.split())
+        if norm != correct_norm and norm not in distractor_pool:
+            distractor_pool.append(norm)
+    if len(distractor_pool) < 3:
+        return None
+
+    name = str(node.get("display") or node["id"])
+    values = [correct_norm, *rng.sample(distractor_pool, 3)]
+    rng.shuffle(values)
+    options = dict(zip(("A", "B", "C", "D"), values))
+    correct = next(k for k, v in options.items() if v == correct_norm)
+    return Question(
+        node_id=node["id"],
+        question=(
+            f"One line in the code below was altered from the real implementation "
+            f"of `{name}`. Which shown line is NOT what the real code does?"
+        ),
+        options=options,
+        correct=correct,
+        explanation=f"The real code reads: {lines[index].strip()}",
+        difficulty=difficulty,
+        tier=0,  # constructed, no LLM involved
+        snippet="\n".join(shown),
+    )
+
+
 def get_questions(
     node: dict,
     graph: nx.DiGraph,
@@ -428,10 +527,13 @@ def get_questions(
     snippet = g.get_source_snippet(node)[:MAX_SOURCE_CHARS]
     display_snippet = "\n".join(snippet.splitlines()[:MAX_DISPLAY_SNIPPET_LINES])
 
-    # One construction-grounded cloze per node when the source supports it —
-    # its correct answer is the real line, immune to model hallucination.
+    # Construction-grounded questions when the source supports them — their
+    # correct answers are real lines we removed or altered ourselves,
+    # immune to model hallucination.
     cloze = build_cloze_question(node, snippet, difficulty, config) if snippet else None
-    llm_count = max(1, count - (1 if cloze else 0))
+    mutant = build_mutant_question(node, snippet, difficulty) if snippet else None
+    constructed = [q for q in (cloze, mutant) if q is not None]
+    llm_count = max(1, count - len(constructed))
 
     prompt = build_prompt(
         node, graph, difficulty, llm_count, num_ctx=config.ollama.num_ctx, snippet=snippet
@@ -456,13 +558,13 @@ def get_questions(
             )
             for question in questions:
                 question.snippet = display_snippet
-            combined = questions + ([cloze] if cloze else [])
+            combined = questions + constructed
             # Shuffle so downstream round-robin selection surfaces a mix of
             # formats, not always the same kind from every node.
             random.shuffle(combined)
             return combined
         except ValueError as exc:
             last_error = exc
-    if cloze is not None:  # the LLM failed but the constructed question is solid
-        return [cloze]
+    if constructed:  # the LLM failed but the constructed questions are solid
+        return constructed
     raise last_error

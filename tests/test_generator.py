@@ -853,3 +853,51 @@ def test_build_cloze_question_accepts_bare_list_response(
     question = router.build_cloze_question(node, SNIPPET, "medium", Config())
     assert question is not None
     assert len(set(question.options.values())) == 4
+
+
+# --- mutant questions (spot the alteration, zero LLM) -----------------------------
+
+
+def test_mutate_line_flips_operators() -> None:
+    import random
+
+    rng = random.Random(1)
+    assert router._mutate_line("    if a == b and c:", rng) in {
+        "    if a != b and c:", "    if a == b or c:",
+    }
+    assert router._mutate_line("    total = max(x, y)", rng) == "    total = min(x, y)"
+    assert router._mutate_line("    pass", rng) is None
+
+
+def test_build_mutant_question_no_llm_and_truth_by_construction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import random
+
+    def no_llm(*args, **kwargs):
+        raise AssertionError("mutant questions must never call the model")
+
+    monkeypatch.setattr(local, "call_local", no_llm)
+
+    node = {"id": "n1", "display": "prune_stale", "file": "app/prune.py"}
+    question = router.build_mutant_question(node, SNIPPET, "hard", rng=random.Random(5))
+    assert question is not None
+    assert question.tier == 0
+    # The correct option is the altered line, visible in the shown snippet...
+    shown_norms = {" ".join(line.split()) for line in question.snippet.splitlines()}
+    assert question.options[question.correct] in shown_norms
+    # ...and it is NOT a line of the real source.
+    real_norms = {" ".join(line.split()) for line in SNIPPET.splitlines()}
+    assert question.options[question.correct] not in real_norms
+    # Distractors are genuine real lines.
+    for key, value in question.options.items():
+        if key != question.correct:
+            assert value in real_norms
+    # The explanation reveals the real line.
+    assert question.explanation.startswith("The real code reads:")
+
+
+def test_build_mutant_question_unmutable_snippet_returns_none() -> None:
+    node = {"id": "n1", "display": "x", "file": "a.py"}
+    snippet = "def x():\n    pass\n    return None"
+    assert router.build_mutant_question(node, snippet, "hard") is None
