@@ -74,10 +74,12 @@ def init() -> None:
             "  Install it with: pip install graphifyy"
         )
 
-    # 2. Build the knowledge graph.
+    # 2. Build the knowledge graph. --code-only keeps graphify on its local
+    #    AST path: doc/image extraction needs a cloud LLM key, which Roger's
+    #    local-only constraint forbids.
     console.print("Building knowledge graph with graphify…")
     try:
-        subprocess.run(["graphify", "./"], check=True)
+        subprocess.run(["graphify", "./", "--code-only"], check=True)
     except (subprocess.CalledProcessError, FileNotFoundError) as exc:
         _fail(f"✗ Roger: graphify failed: {exc}")
     graph_path = Path(config.graph.path)
