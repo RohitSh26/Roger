@@ -133,3 +133,73 @@ def test_query_graph_for_ask_matches_descriptions(graph: nx.DiGraph) -> None:
 
 def test_query_graph_for_ask_no_match(graph: nx.DiGraph) -> None:
     assert g.query_graph_for_ask(graph, "zzz qqq xyzzy") == ""
+
+
+# --- real graphify schema (undirected serialization, source_file/label, relations) ---
+
+REAL_SCHEMA_DATA = {
+    "directed": False,  # graphify serializes undirected, but edge direction is semantic
+    "multigraph": False,
+    "graph": {},
+    "hyperedges": [],  # extra graphify keys must not break loading
+    "nodes": [
+        {"id": "app_main", "label": "main.py", "source_file": "app/main.py", "community": 3},
+        {"id": "app_helper", "label": "helper", "source_file": "app/helper.py", "community": 3},
+        {"id": "app_config", "label": "config", "source_file": "app/config.py", "community": 7},
+    ],
+    "links": [
+        {"source": "app_main", "target": "app_helper", "relation": "calls"},
+        {"source": "app_main", "target": "app_config", "relation": "contains"},
+        {"source": "app_helper", "target": "app_config", "relation": "references"},
+    ],
+}
+
+
+@pytest.fixture
+def real_schema_graph(tmp_path: Path) -> nx.DiGraph:
+    import json
+
+    path = tmp_path / "graph.json"
+    path.write_text(json.dumps(REAL_SCHEMA_DATA), encoding="utf-8")
+    return g.load_graph(str(path))
+
+
+def test_real_schema_loads_directed_without_symmetrizing(real_schema_graph) -> None:
+    assert real_schema_graph.is_directed()
+    # 3 links must stay 3 edges — not doubled into 6.
+    assert real_schema_graph.number_of_edges() == 3
+    assert real_schema_graph.has_edge("app_main", "app_helper")
+    assert not real_schema_graph.has_edge("app_helper", "app_main")
+
+
+def test_real_schema_normalizes_attributes(real_schema_graph) -> None:
+    node = g.get_node(real_schema_graph, "app_main")
+    assert node["file"] == "app/main.py"       # from source_file
+    assert node["description"] == "main.py"    # from label
+    assert node["community"] == "3"            # int → str
+
+
+def test_real_schema_only_call_edges_count(real_schema_graph) -> None:
+    main = g.get_node(real_schema_graph, "app_main")
+    assert main["callees"] == ["app_helper"]   # 'contains' edge excluded
+    config = g.get_node(real_schema_graph, "app_config")
+    assert config["callers"] == []             # contains/references are not calls
+    helper = g.get_node(real_schema_graph, "app_helper")
+    assert helper["callers"] == ["app_main"]
+
+
+def test_real_schema_file_queries_use_normalized_paths(real_schema_graph) -> None:
+    assert g.get_changed_nodes(real_schema_graph, ["app/helper.py"]) == ["app_helper"]
+    assert g.get_nodes_by_path(real_schema_graph, "app") == [
+        "app_config", "app_helper", "app_main",
+    ]
+
+
+def test_serialize_subgraph_respects_max_chars(graph: nx.DiGraph) -> None:
+    sub = g.get_subgraph(graph, "payments.process_payment", hops=1)
+    full = g.serialize_subgraph(sub)
+    capped = g.serialize_subgraph(sub, max_chars=120)
+    assert len(capped) < len(full)
+    assert "omitted" in capped
+    # Uncapped output (the cache-hash input) must never carry the marker.
+    assert "omitted" not in full

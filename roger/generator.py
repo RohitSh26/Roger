@@ -79,6 +79,12 @@ def generate_questions(
     config = config or Config()
     pool: list[Question] = []
 
+    # Ask each node for a small batch rather than `count` apiece: the 1B
+    # model must fit its JSON inside num_predict tokens, and long node ids
+    # make 5-question responses truncate mid-array. A couple per node still
+    # gives the selector a pool ~2x the session size.
+    per_node = min(5, max(2, -(-count // len(node_ids)))) if node_ids else count
+
     for node_id in node_ids:
         node = g.get_node(graph, node_id)
         subgraph = g.get_subgraph(graph, node_id, hops=1)
@@ -91,7 +97,7 @@ def generate_questions(
                 pool.extend(matching)
                 continue
 
-        questions = get_questions_from_llm(node, graph, difficulty, count, config=config)
+        questions = get_questions_from_llm(node, graph, difficulty, per_node, config=config)
         cache_questions(node_hash, node_id, difficulty, questions, config.model.local)
         pool.extend(questions)
 

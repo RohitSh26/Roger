@@ -127,7 +127,9 @@ def module_question(
     """Which module/layer does `{node}` belong to?"""
     rng = rng or random.Random()
     community = node.get("community")
-    if not community:
+    # Real graphify emits numeric Leiden community ids — "which module does X
+    # belong to: 229 or 164?" is not a meaningful quiz question, so skip.
+    if not community or str(community).isdigit():
         return None
     all_communities = sorted(
         {
