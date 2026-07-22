@@ -116,3 +116,11 @@ def test_templates_are_deterministic_with_seeded_rng(graph: nx.DiGraph) -> None:
     first = templates.build_from_graph(node, graph, rng=random.Random(7))
     second = templates.build_from_graph(node, graph, rng=random.Random(7))
     assert first == second
+
+
+def test_module_question_skips_numeric_communities(graph: nx.DiGraph, rng: random.Random) -> None:
+    # Real graphify emits integer Leiden ids — a "which module?" question over
+    # bare numbers is meaningless and must be skipped.
+    node = get_node(graph, "payments.charge")
+    node["community"] = "229"
+    assert templates.module_question(node, graph, rng=rng) is None

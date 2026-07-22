@@ -49,6 +49,23 @@ Generate exactly {count} questions. Respond with JSON only, no other text:
 """
 
 
+# Budget for the serialized neighborhood inside the prompt. The Modelfile
+# sets num_ctx 8192 and num_predict 1024; code identifiers tokenize at
+# roughly 3 chars/token, so ~15K chars keeps the whole request comfortably
+# under the context window. God nodes with hundreds of neighbors otherwise
+# produce 200K+ char prompts that Ollama rejects outright.
+MAX_SUBGRAPH_CHARS = 15_000
+MAX_LISTED_NEIGHBORS = 15
+
+
+def _cap_list(items: list[str], limit: int = MAX_LISTED_NEIGHBORS) -> str:
+    if not items:
+        return "none"
+    shown = ", ".join(items[:limit])
+    hidden = len(items) - limit
+    return f"{shown} (+{hidden} more)" if hidden > 0 else shown
+
+
 def build_prompt(node: dict, graph: nx.DiGraph, difficulty: str, count: int) -> str:
     """Fill the question-generation prompt with node + 1-hop subgraph context."""
     subgraph = g.get_subgraph(graph, node["id"], hops=1)
@@ -59,11 +76,37 @@ def build_prompt(node: dict, graph: nx.DiGraph, difficulty: str, count: int) -> 
         description=node.get("description", ""),
         file=node.get("file", ""),
         community=node.get("community", ""),
-        callers=", ".join(node.get("callers", [])) or "none",
-        callees=", ".join(node.get("callees", [])) or "none",
+        callers=_cap_list(node.get("callers", [])),
+        callees=_cap_list(node.get("callees", [])),
         returns=node.get("returns", "") or "unknown",
-        serialized_subgraph=g.serialize_subgraph(subgraph),
+        serialized_subgraph=g.serialize_subgraph(subgraph, max_chars=MAX_SUBGRAPH_CHARS),
     )
+
+
+def _normalize_options(options: object) -> Optional[dict[str, str]]:
+    """Coerce model option variants (list form, lowercase keys) to {A..D: text}."""
+    if isinstance(options, list) and len(options) >= 4:
+        return {key: str(v) for key, v in zip(OPTION_KEYS, options)}
+    if isinstance(options, dict):
+        upper = {str(k).strip().upper(): str(v) for k, v in options.items()}
+        if all(key in upper for key in OPTION_KEYS):
+            return {key: upper[key] for key in OPTION_KEYS}
+    return None
+
+
+def _normalize_correct(item: dict, options: dict[str, str]) -> Optional[str]:
+    """Coerce 'correct' variants ('b', 'B)', full option text, 'answer' key)."""
+    raw = item.get("correct", item.get("answer"))
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    letter = text[:1].upper()
+    if letter in OPTION_KEYS and (len(text) <= 2 or text[1] in ").:. "):
+        return letter
+    for key, value in options.items():  # model repeated the option text verbatim
+        if value.strip() == text:
+            return key
+    return letter if letter in OPTION_KEYS else None
 
 
 def parse_questions(raw: dict, node_id: str, difficulty: str, tier: int) -> list[Question]:
@@ -74,23 +117,20 @@ def parse_questions(raw: dict, node_id: str, difficulty: str, tier: int) -> list
 
     questions = []
     for item in items:
-        if not isinstance(item, dict):
+        if not isinstance(item, dict) or not item.get("question"):
             continue
-        options = item.get("options")
-        correct = item.get("correct")
-        if (
-            not isinstance(options, dict)
-            or sorted(options) != sorted(OPTION_KEYS)
-            or correct not in OPTION_KEYS
-            or not item.get("question")
-        ):
+        options = _normalize_options(item.get("options"))
+        if options is None:
+            continue
+        correct = _normalize_correct(item, options)
+        if correct is None:
             continue
         questions.append(
             Question(
                 node_id=node_id,
                 question=str(item["question"]),
-                options={k: str(v) for k, v in options.items()},
-                correct=str(correct),
+                options=options,
+                correct=correct,
                 explanation=str(item.get("explanation", "")),
                 difficulty=difficulty,
                 tier=tier,
@@ -124,5 +164,13 @@ def get_questions(
         raise OllamaNotRunningError(local.OLLAMA_NOT_RUNNING_MSG)
 
     prompt = build_prompt(node, graph, difficulty, count)
-    raw = local.call_local(prompt, model=config.model.local, base_url=config.ollama.url)
-    return parse_questions(raw, node_id=node["id"], difficulty=difficulty, tier=1)
+    # A 1B model at temperature 0.7 occasionally emits an unusable shape;
+    # a fresh sample usually fixes it, so retry before giving up.
+    last_error: Exception = ValueError("no attempts made")
+    for _ in range(3):
+        try:
+            raw = local.call_local(prompt, model=config.model.local, base_url=config.ollama.url)
+            return parse_questions(raw, node_id=node["id"], difficulty=difficulty, tier=1)
+        except ValueError as exc:
+            last_error = exc
+    raise last_error

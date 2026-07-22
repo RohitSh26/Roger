@@ -179,7 +179,7 @@ def quiz() -> None:
             count=config.quiz.questions_per_session,
             config=config,
         )
-    except (OllamaNotRunningError, ModelNotRegisteredError, CacheError) as exc:
+    except (OllamaNotRunningError, ModelNotRegisteredError, CacheError, ValueError) as exc:
         _fail(str(exc))
         return
 

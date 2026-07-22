@@ -40,14 +40,46 @@ def load_graph(path: str = GRAPH_PATH) -> nx.DiGraph:
 
     # Graphify may serialize edges under "links" (node-link default) or "edges".
     edge_key = "links" if "links" in data else "edges"
+    # Graphify writes "directed": false but its links carry semantic
+    # source→target relations (calls, imports, contains). Force a directed
+    # load so each link stays one edge in its original direction instead of
+    # being symmetrized into a caller/callee-scrambling double edge.
+    if not data.get("directed", False):
+        data = {**data, "directed": True}
     try:
         graph = nx.node_link_graph(data, edges=edge_key)
     except TypeError:  # networkx < 3.4 uses link= instead of edges=
         graph = nx.node_link_graph(data, link=edge_key)
 
-    if not graph.is_directed():
-        graph = nx.DiGraph(graph)
+    _normalize_node_attrs(graph)
     return graph
+
+
+def _normalize_node_attrs(graph: nx.DiGraph) -> None:
+    """Map graphify's real attribute names onto the ones Roger queries.
+
+    Real graphify nodes carry source_file/label and an integer community;
+    Roger reads file/description and string communities. Missing attributes
+    (e.g. returns) stay absent — templates skip questions they can't build.
+    """
+    for _, attrs in graph.nodes(data=True):
+        if "file" not in attrs and "source_file" in attrs:
+            attrs["file"] = attrs["source_file"]
+        if "description" not in attrs and "label" in attrs:
+            attrs["description"] = str(attrs["label"])
+        if attrs.get("community") is not None:
+            attrs["community"] = str(attrs["community"])
+
+
+# Graphify edge relations that mean "A calls B". Other relations (contains,
+# references, imports…) must not masquerade as call edges in quiz questions.
+# Edges with no relation attribute (plain graphs) count as calls.
+CALL_RELATIONS = {"calls", "indirect_call"}
+
+
+def _is_call_edge(edge_attrs: dict) -> bool:
+    relation = edge_attrs.get("relation")
+    return relation is None or relation in CALL_RELATIONS
 
 
 def get_node(graph: nx.DiGraph, node_id: str) -> dict:
@@ -56,8 +88,12 @@ def get_node(graph: nx.DiGraph, node_id: str) -> dict:
         raise KeyError(f"Node not in graph: {node_id}")
     attrs = dict(graph.nodes[node_id])
     attrs["id"] = node_id
-    attrs["callers"] = sorted(graph.predecessors(node_id))
-    attrs["callees"] = sorted(graph.successors(node_id))
+    attrs["callers"] = sorted(
+        u for u, _, d in graph.in_edges(node_id, data=True) if _is_call_edge(d)
+    )
+    attrs["callees"] = sorted(
+        v for _, v, d in graph.out_edges(node_id, data=True) if _is_call_edge(d)
+    )
     return attrs
 
 
@@ -106,10 +142,13 @@ def get_nodes_by_path(graph: nx.DiGraph, path: str) -> list[str]:
     return sorted(matches)
 
 
-def serialize_subgraph(subgraph: nx.DiGraph) -> str:
+def serialize_subgraph(subgraph: nx.DiGraph, max_chars: int | None = None) -> str:
     """Serialize a subgraph to a compact text format for LLM prompt injection.
 
-    Output is deterministic (sorted nodes/edges) — it also feeds the cache hash.
+    Output is deterministic (sorted nodes/edges) — it also feeds the cache
+    hash, so hashing must pass max_chars=None for full fidelity. Prompts pass
+    a budget: god nodes can have hundreds of neighbors, and an uncapped
+    serialization blows past the model's context window.
     """
     lines = []
     for node_id in sorted(subgraph.nodes):
@@ -121,7 +160,21 @@ def serialize_subgraph(subgraph: nx.DiGraph) -> str:
         lines.append(f"- {node_id} [file={file} community={community} returns={returns}] {desc}")
     for src, dst in sorted(subgraph.edges):
         lines.append(f"  {src} -> {dst}")
-    return "\n".join(lines)
+
+    if max_chars is None:
+        return "\n".join(lines)
+
+    kept: list[str] = []
+    used = 0
+    for line in lines:
+        if used + len(line) + 1 > max_chars:
+            break
+        kept.append(line)
+        used += len(line) + 1
+    omitted = len(lines) - len(kept)
+    if omitted:
+        kept.append(f"… (+{omitted} more neighbors/edges omitted)")
+    return "\n".join(kept)
 
 
 def get_god_node_ids_from_report(report_path: str = REPORT_PATH) -> list[str]:

@@ -62,6 +62,9 @@ def call_local(
                 "model": model,
                 "messages": [{"role": "user", "content": prompt}],
                 "stream": False,
+                # MiniCPM5-Thinking otherwise spends its whole num_predict
+                # budget in the thinking phase and truncates the JSON answer.
+                "think": False,
             },
             timeout=timeout,
         )
@@ -70,14 +73,55 @@ def call_local(
 
     if resp.status_code == 404:
         raise ModelNotRegisteredError(MODEL_NOT_REGISTERED_MSG.format(model=model))
-    resp.raise_for_status()
+    if resp.status_code >= 400:
+        # Surface Ollama's own error message (e.g. context-size exceeded)
+        # instead of a bare HTTP status.
+        try:
+            detail = resp.json().get("error", resp.text)
+        except ValueError:
+            detail = resp.text
+        raise ValueError(
+            f"✗ Roger: Ollama request failed (HTTP {resp.status_code}): {str(detail)[:300]}"
+        )
 
     content = resp.json()["message"]["content"]
     content = strip_thinking(content)
+    return _parse_json_lenient(content)
+
+
+def _parse_json_lenient(content: str) -> dict:
+    """Parse model output as JSON, salvaging what a small model mangles.
+
+    A 1B model wraps JSON in prose/fences or truncates mid-array when it
+    hits num_predict. Strip to the outermost braces first; if the tail is
+    truncated, cut back to the last complete object and re-close the
+    structure — parse_questions validates whatever survives.
+    """
     try:
         return json.loads(content)
-    except json.JSONDecodeError as exc:
-        raise ValueError(
-            f"Local model returned invalid JSON after stripping thinking blocks: "
-            f"{content[:200]!r}"
-        ) from exc
+    except json.JSONDecodeError:
+        pass
+
+    start = content.find("{")
+    end = content.rfind("}")
+    if start != -1 and end > start:
+        try:
+            return json.loads(content[start : end + 1])
+        except json.JSONDecodeError:
+            pass
+
+    if start != -1:
+        snippet = content[start:]
+        brace_positions = [i for i, ch in enumerate(snippet) if ch == "}"]
+        for pos in reversed(brace_positions[-20:]):
+            base = snippet[: pos + 1]
+            for closer in ("", "]}", "}", "}]}"):
+                try:
+                    return json.loads(base + closer)
+                except json.JSONDecodeError:
+                    continue
+
+    raise ValueError(
+        f"Local model returned invalid JSON after stripping thinking blocks: "
+        f"{content[:200]!r}"
+    )

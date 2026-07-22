@@ -61,7 +61,7 @@ def run_guard() -> None:
             count=config.quiz.questions_per_session,
             config=config,
         )
-    except (OllamaNotRunningError, ModelNotRegisteredError) as exc:
+    except (OllamaNotRunningError, ModelNotRegisteredError, ValueError) as exc:
         print(exc)
         print("  Skip this quiz once with: ROGER_SKIP=1 git commit ...")
         sys.exit(1)

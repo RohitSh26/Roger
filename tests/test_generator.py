@@ -70,6 +70,7 @@ class FakeResponse:
     def __init__(self, payload: dict, status_code: int = 200):
         self._payload = payload
         self.status_code = status_code
+        self.text = json.dumps(payload)
 
     def json(self) -> dict:
         return self._payload
@@ -81,12 +82,16 @@ class FakeResponse:
 
 def test_call_local_strips_thinking_and_parses_json(monkeypatch: pytest.MonkeyPatch) -> None:
     content = '<think>let me reason</think>{"questions": []}'
-    monkeypatch.setattr(
-        local.requests,
-        "post",
-        lambda *a, **k: FakeResponse({"message": {"content": content}}),
-    )
+    payloads: list[dict] = []
+
+    def fake_post(url, json=None, timeout=None):
+        payloads.append(json)
+        return FakeResponse({"message": {"content": content}})
+
+    monkeypatch.setattr(local.requests, "post", fake_post)
     assert local.call_local("prompt") == {"questions": []}
+    # Thinking must be disabled or the model truncates its JSON answer.
+    assert payloads[0]["think"] is False
 
 
 def test_call_local_invalid_json_raises_value_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -310,3 +315,144 @@ def test_select_questions_dedupes_and_respects_count() -> None:
 
 def test_select_questions_empty_pool() -> None:
     assert generator.select_questions([], count=5, god_node_ids=[]) == []
+
+
+def test_call_local_surfaces_ollama_error_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    body = {"error": "request (53240 tokens) exceeds the available context size (8192 tokens)"}
+    monkeypatch.setattr(
+        local.requests, "post", lambda *a, **k: FakeResponse(body, status_code=400)
+    )
+    with pytest.raises(ValueError) as excinfo:
+        local.call_local("prompt")
+    assert "exceeds the available context size" in str(excinfo.value)
+
+
+def test_build_prompt_caps_huge_neighborhoods(graph: nx.DiGraph) -> None:
+    # Give payments.charge a god-node-sized neighborhood.
+    for i in range(500):
+        node_id = f"generated.caller_{i:03d}"
+        graph.add_node(
+            node_id,
+            description="x" * 100,
+            file=f"src/generated/caller_{i:03d}.py",
+            community="payments",
+        )
+        graph.add_edge(node_id, "payments.charge")
+
+    node = get_node(graph, "payments.charge")
+    assert len(node["callers"]) > 400
+    prompt = router.build_prompt(node, graph, "medium", 5)
+    assert len(prompt) < router.MAX_SUBGRAPH_CHARS + 3_000  # subgraph budget + template
+    assert "omitted" in prompt
+    assert "more)" in prompt  # capped caller list
+
+
+# --- lenient JSON parsing (small-model output salvage) --------------------------
+
+
+def test_parse_json_lenient_handles_markdown_fences() -> None:
+    content = 'Here you go:\n```json\n{"questions": [{"q": 1}]}\n```\nHope that helps!'
+    assert local._parse_json_lenient(content) == {"questions": [{"q": 1}]}
+
+
+def test_parse_json_lenient_repairs_truncated_array() -> None:
+    # Simulates hitting num_predict mid-generation: second object cut off.
+    content = (
+        '{"questions": [{"question": "Q1?", "options": {"A": "a", "B": "b", '
+        '"C": "c", "D": "d"}, "correct": "A", "explanation": "e"}, '
+        '{"question": "Q2?", "options": {"A": "a", "B'
+    )
+    parsed = local._parse_json_lenient(content)
+    assert len(parsed["questions"]) == 1
+    assert parsed["questions"][0]["question"] == "Q1?"
+
+
+def test_parse_json_lenient_hopeless_input_raises() -> None:
+    with pytest.raises(ValueError):
+        local._parse_json_lenient("total garbage with no braces")
+
+
+def test_generate_questions_asks_small_per_node_batches(
+    graph_in_repo: nx.DiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asked: list[int] = []
+
+    def fake_llm(node, graph, difficulty, count, config=None):
+        asked.append(count)
+        return [make_question(node_id=node["id"], text=f"Q {node['id']}?")]
+
+    monkeypatch.setattr(generator, "get_questions_from_llm", fake_llm)
+    node_ids = ["payments.charge", "db.connect", "auth.login", "auth.logout", "payments.notify"]
+    generator.generate_questions(node_ids, graph_in_repo, "medium", count=5)
+    assert asked == [2, 2, 2, 2, 2]  # not [5, 5, 5, 5, 5]
+
+
+# --- parse normalization + retry ------------------------------------------------
+
+
+def test_parse_questions_normalizes_list_options_and_answer_key() -> None:
+    raw = {
+        "questions": [
+            {
+                "question": "Q?",
+                "options": ["first", "second", "third", "fourth"],
+                "answer": "b) second",
+            }
+        ]
+    }
+    (q,) = router.parse_questions(raw, node_id="n1", difficulty="medium", tier=1)
+    assert q.options == {"A": "first", "B": "second", "C": "third", "D": "fourth"}
+    assert q.correct == "B"
+
+
+def test_parse_questions_normalizes_lowercase_keys_and_text_answer() -> None:
+    raw = {
+        "questions": [
+            {
+                "question": "Q?",
+                "options": {"a": "alpha", "b": "beta", "c": "gamma", "d": "delta"},
+                "correct": "gamma",
+            }
+        ]
+    }
+    (q,) = router.parse_questions(raw, node_id="n1", difficulty="medium", tier=1)
+    assert q.options["C"] == "gamma"
+    assert q.correct == "C"
+
+
+def test_router_retries_transient_bad_shapes(
+    graph: nx.DiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attempts = {"n": 0}
+
+    def flaky_call_local(prompt: str, **kwargs) -> dict:
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            return {"questions": [{"question": "bad", "options": "not a dict"}]}
+        return VALID_RAW
+
+    monkeypatch.setattr(local, "is_ollama_running", lambda *a, **k: True)
+    monkeypatch.setattr(local, "call_local", flaky_call_local)
+
+    node = get_node(graph, "payments.charge")
+    questions = router.get_questions(node, graph, difficulty="medium", count=2)
+    assert attempts["n"] == 3
+    assert len(questions) == 1
+
+
+def test_router_gives_up_after_three_attempts(
+    graph: nx.DiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attempts = {"n": 0}
+
+    def always_bad(prompt: str, **kwargs) -> dict:
+        attempts["n"] += 1
+        return {"no_questions": True}
+
+    monkeypatch.setattr(local, "is_ollama_running", lambda *a, **k: True)
+    monkeypatch.setattr(local, "call_local", always_bad)
+
+    node = get_node(graph, "payments.charge")
+    with pytest.raises(ValueError):
+        router.get_questions(node, graph, difficulty="medium", count=2)
+    assert attempts["n"] == 3
