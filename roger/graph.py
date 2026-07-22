@@ -247,6 +247,36 @@ def serialize_subgraph(
     return "\n".join(kept)
 
 
+_LOCATION_RE = re.compile(r"L(\d+)(?:\s*[-–]\s*L?(\d+))?")
+
+
+def get_source_snippet(
+    attrs: dict, max_lines: int = 48, repo_root: Path | None = None
+) -> str:
+    """Read the source text for a node from disk, if the file still exists.
+
+    Graphify records file + source_location (e.g. 'L42'); Roger reads a
+    window of real code so the LLM can ask comprehension questions instead
+    of structure trivia. This is not a parsing layer — just the text at the
+    location graphify already identified.
+    """
+    file = str(attrs.get("file") or "")
+    if not file:
+        return ""
+    path = (repo_root or Path(".")) / file
+    if not path.is_file():
+        return ""
+    match = _LOCATION_RE.search(str(attrs.get("source_location") or ""))
+    start = int(match.group(1)) if match else 1
+    end = int(match.group(2)) if match and match.group(2) else start + max_lines - 1
+    end = min(end, start + max_lines - 1)
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    return "\n".join(lines[start - 1 : end]).strip()
+
+
 def get_god_node_ids_from_report(report_path: str = REPORT_PATH) -> list[str]:
     """Parse GRAPH_REPORT.md to extract named god nodes — used for quiz weighting."""
     report = Path(report_path)

@@ -21,42 +21,50 @@ You are writing a code-comprehension quiz for a developer who works in this
 codebase, in the style of a professional certification exam: scenario-based,
 testing real understanding, never trivia.
 
-CODE CONTEXT (this is ALL you know — names, files, and who calls whom):
+CODE CONTEXT:
 Name: {name}
 File: {file}
 Called by: {callers}
 Calls: {callees}
-{returns_line}Related code (name (file), then relationships):
+{returns_line}{source_block}Related code (name (file), then relationships):
 {serialized_subgraph}
 
-QUESTION TYPES — write {count} questions, each a different type; skip any type
-this context cannot support:
-1. Impact: a realistic change to {name} (new parameter, changed return shape,
-   rename) — which related code must change too? The answer comes from
-   "Called by".
-2. Delegation: {name} needs something done — which collaborator does it hand
-   that work to? The answer comes from "Calls".
-3. Structure: which statement correctly describes the dependency between
-   {name} and one piece of related code (who depends on whom)?
-4. Responsibility: given its file and collaborators, what is {name}'s job?
-   Use the real jobs of OTHER related code as the wrong options.
-5. Ripple (hard difficulty only): if something {name} depends on starts
-   failing, which code is affected first?
+THE MEMORY RULE — the most important rule:
+Never ask the developer to recall structural facts from memory (who calls
+what, file names, signatures). If a question needs such a fact, state the
+fact inside the question. Test only what a developer who once understood
+this code would still know a month later: purpose, behavior, design intent,
+and consequences.
 
-DIFFICULTY: {difficulty} — medium uses types 1-4; hard prefers types 3-5 with
-design trade-offs.
+QUESTION TYPES — write {count} questions, each a different type; skip any
+type this context cannot support:
+1. Behavior: what does {name} do in a specific situation visible in its
+   SOURCE (a particular input, a branch, an early return, an error path)?
+2. Purpose: what problem does {name} solve for the code that uses it?
+   Wrong options: the real purposes of other related code.
+3. Design: why is {name} written the way it is (a guard, a delegation, an
+   ordering, a data structure) — what would go wrong without it?
+4. Consequence: state a structural fact in the question ("{name} is used
+   by ..."), then ask what a proposed change would mean — the fact is
+   given, the judgment is tested.
+5. Ripple (hard difficulty only): given the dependencies shown, where would
+   a failure in one of {name}'s collaborators surface, and why there?
+
+DIFFICULTY: {difficulty} — medium prefers types 1, 2 and 4; hard prefers
+types 3 and 5 with design trade-offs.
 
 RULES — every question must pass all five:
-- Grounded: the correct answer is provable from the CODE CONTEXT alone. Never
-  invent runtime behavior, error messages, or values that are not shown above.
-- Cover test: a developer who knows this code can answer before reading the
-  options.
-- No giveaways: the question never contains or paraphrases its own answer, and
-  the correct option never merely restates the name {name} — a self-answering
-  question is worthless.
-- Honest options: wrong options are real names, or realistic-sounding claims
-  about the related code above that do NOT hold. All four options share the
-  same grammatical form and similar length. Never use "all/none of the above".
+- Grounded: the correct answer is provable from the SOURCE and CODE CONTEXT
+  above. Never invent runtime behavior, error messages, or values that are
+  not shown.
+- Cover test: a developer who understands this code can answer before
+  reading the options.
+- No giveaways: the question never contains or paraphrases its own answer,
+  and the correct option never merely restates the name {name} — a
+  self-answering question is worthless.
+- Honest options: wrong options are realistic-sounding claims about this
+  code that the SOURCE rules out. All four options share the same
+  grammatical form and similar length. Never use "all/none of the above".
 - Developer voice: plain code-review language. Never say "node", "graph",
   "community", "neighboring", or refer to this prompt.
 
@@ -76,6 +84,7 @@ RULES — every question must pass all five:
 
 DEFAULT_NUM_CTX = 8192
 MAX_LISTED_NEIGHBORS = 15
+MAX_SOURCE_CHARS = 4_000
 
 
 def _subgraph_char_budget(num_ctx: int) -> int:
@@ -99,27 +108,26 @@ def _cap_list(items: list[str], limit: int = MAX_LISTED_NEIGHBORS) -> str:
 
 
 def _example_block(name: str, caller_names: list[str], callee_names: list[str]) -> str:
-    """A worked type-1 example built from the node's own relationships.
+    """A worked question shape built from the node's own relationships.
 
     Small models copy worked examples verbatim — a fixed example about
     foreign code produced quizzes about that foreign code. Built from the
-    real names, copying the example yields a correct, grounded question.
+    real names, copying the example still yields a grounded question. Only
+    the question shape is shown, never answer mechanics, so nothing here
+    can leak an answer format into question text.
     """
     if callee_names:
-        other, answer = callee_names[0], name
-        reason = f"{name} calls {other}"
-    elif caller_names:
-        other, answer = name, caller_names[0]
-        reason = f"{caller_names[0]} calls {name}"
-    else:
-        return ""
-    return (
-        "WORKED EXAMPLE (type 1, already using the real names above — model\n"
-        "your wording on it but vary the scenario):\n"
-        f'Question: "{other} is getting a new required argument. Which of these\n'
-        f'must be updated to pass it?" Correct option: {answer}, because\n'
-        f"{reason}. Wrong options: related code that does not call {other}.\n\n"
-    )
+        return (
+            "WORKED EXAMPLE of a good question shape (real names, vary the angle):\n"
+            f'"Why does {name} hand part of its work to {callee_names[0]} instead\n'
+            'of doing it inline?"\n\n'
+        )
+    if caller_names:
+        return (
+            "WORKED EXAMPLE of a good question shape (real names, vary the angle):\n"
+            f'"What does {caller_names[0]} rely on {name} to take care of?"\n\n'
+        )
+    return ""
 
 
 def build_prompt(
@@ -144,6 +152,19 @@ def build_prompt(
     caller_names = names(node.get("callers", []))
     callee_names = names(node.get("callees", []))
     returns = node.get("returns")
+
+    # Real source makes the difference between comprehension questions and
+    # structure trivia. It gets first claim on the context budget; the
+    # serialized neighborhood absorbs whatever remains.
+    snippet = g.get_source_snippet(node)[:MAX_SOURCE_CHARS]
+    source_block = (
+        f"SOURCE (excerpt from {node.get('file', '')} {node.get('source_location', '')}):\n"
+        f"{snippet}\n\n"
+        if snippet
+        else ""
+    )
+    subgraph_budget = max(3_000, _subgraph_char_budget(num_ctx) - len(source_block))
+
     return PROMPT_TEMPLATE.format(
         count=count,
         difficulty=difficulty,
@@ -152,8 +173,9 @@ def build_prompt(
         callers=_cap_list(caller_names),
         callees=_cap_list(callee_names),
         returns_line=f"Returns: {returns}\n" if returns else "",
+        source_block=source_block,
         serialized_subgraph=g.serialize_subgraph(
-            subgraph, max_chars=_subgraph_char_budget(num_ctx), labels=True
+            subgraph, max_chars=subgraph_budget, labels=True
         ),
         example_block=_example_block(name, caller_names, callee_names),
     )

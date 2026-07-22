@@ -262,3 +262,27 @@ def test_serialize_subgraph_labels_mode_hides_slugs(real_schema_graph) -> None:
     assert "main.py calls helper" in text
     assert "main.py contains config" in text
     assert "app_main" not in text  # slugs never reach the prompt
+
+
+def test_get_source_snippet_reads_window(tmp_path: Path) -> None:
+    src = tmp_path / "app" / "worker.py"
+    src.parent.mkdir()
+    src.write_text("\n".join(f"line {i}" for i in range(1, 101)), encoding="utf-8")
+
+    attrs = {"file": "app/worker.py", "source_location": "L10"}
+    snippet = g.get_source_snippet(attrs, max_lines=5, repo_root=tmp_path)
+    assert snippet.splitlines() == ["line 10", "line 11", "line 12", "line 13", "line 14"]
+
+    ranged = g.get_source_snippet(
+        {"file": "app/worker.py", "source_location": "L10-L12"}, repo_root=tmp_path
+    )
+    assert ranged.splitlines() == ["line 10", "line 11", "line 12"]
+
+
+def test_get_source_snippet_missing_file_or_location(tmp_path: Path) -> None:
+    assert g.get_source_snippet({"file": "gone.py", "source_location": "L1"}, repo_root=tmp_path) == ""
+    assert g.get_source_snippet({"source_location": "L1"}, repo_root=tmp_path) == ""
+    # No/garbled location falls back to the top of the file.
+    src = tmp_path / "x.py"
+    src.write_text("first\nsecond\n", encoding="utf-8")
+    assert g.get_source_snippet({"file": "x.py"}, max_lines=1, repo_root=tmp_path) == "first"

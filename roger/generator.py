@@ -17,7 +17,7 @@ from roger.storage import cache_questions, get_cached_questions
 # Bump when question generation changes materially (prompt style, filters).
 # The version feeds the cache key, so everyone's stale-style questions
 # regenerate automatically — no manual cache clearing across a team.
-QUESTION_STYLE_VERSION = 4
+QUESTION_STYLE_VERSION = 5
 
 
 def hash_node(node: dict, subgraph: nx.DiGraph) -> str:
