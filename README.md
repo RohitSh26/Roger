@@ -51,7 +51,8 @@ roger guard install   # quiz on staged changes before every commit
 ```
 
 `roger init` does all the setup: runs graphify over your code (local AST, no API key),
-registers the `roger-local` model in Ollama (downloads ~1.2 GB the first time ever),
+registers the `roger-local` model in Ollama (the Modelfile ships inside Roger and is
+written to `.roger/Modelfile`; the ~1.2 GB model weights download the first time ever),
 and creates `.roger/` with a default config and databases. If anything is missing it
 tells you exactly what to run.
 
@@ -143,7 +144,8 @@ your repo ──graphify──▶ graphify-out/graph.json     (nodes, call edges
 **`Ollama is not running`** — start it with `ollama serve` (leave it running).
 
 **`Model 'roger-local' not found in Ollama`** — run `roger init`, or manually:
-`ollama create roger-local -f local/Modelfile` from the Roger checkout.
+`ollama create roger-local -f .roger/Modelfile` (init writes that file; the Modelfile
+ships embedded inside Roger, so no checkout is needed).
 
 **`No knowledge graph found`** — run `roger init` in the repo root. After large
 refactors, re-run it (or `graphify ./ --code-only`) to rebuild the graph.

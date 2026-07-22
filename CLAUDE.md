@@ -25,7 +25,10 @@ any other code parsing. Graphify (pip: `graphifyy`) handles all of that via its 
 Tree-sitter + NetworkX pipeline. Roger reads `graphify-out/graph.json`.
 
 **MiniCPM5-1B is the LLM.** Model: `hf.co/GnLOLot/MiniCPM5-1B-Claude-Opus-Fable5-Thinking-GGUF:Q8_0`.
-Registered via the Modelfile at `local/Modelfile` as `roger-local`.
+Registered via the Modelfile at `local/Modelfile` as `roger-local`. The Modelfile
+content is also embedded in `roger/llm/local.py` (MODELFILE_CONTENT, kept in sync by a
+test) because wheel installs don't ship `local/Modelfile`; `roger init` writes it to
+`.roger/Modelfile` when no checkout copy exists.
 
 **Three tiers, not two.** Tier 0 (graph templates, no LLM) handles simple questions.
 Tier 1 (local Ollama) handles medium and hard. There is no Tier 2.
@@ -157,7 +160,7 @@ When model is not registered:
 ```
 ✗ Roger: Model 'roger-local' not found in Ollama.
   Register it with: roger init
-  Or manually: ollama create roger-local -f local/Modelfile
+  Or manually: ollama create roger-local -f .roger/Modelfile
 ```
 
 ---
