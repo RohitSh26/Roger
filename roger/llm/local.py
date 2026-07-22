@@ -51,6 +51,12 @@ MODEL_NOT_REGISTERED_MSG = (
     "  Or manually: ollama create roger-local -f .roger/Modelfile"
 )
 
+CUSTOM_MODEL_NOT_FOUND_MSG = (
+    "✗ Roger: Model '{model}' not found in Ollama.\n"
+    "  Pull it with: ollama pull {model}\n"
+    '  Or set local = "roger-local" under [model] in .roger/config.toml'
+)
+
 _THINK_RE = re.compile(r"<think>.*?</think>", flags=re.DOTALL)
 
 
@@ -95,7 +101,10 @@ def call_local(
         raise OllamaNotRunningError(OLLAMA_NOT_RUNNING_MSG) from exc
 
     if resp.status_code == 404:
-        raise ModelNotRegisteredError(MODEL_NOT_REGISTERED_MSG.format(model=model))
+        template = (
+            MODEL_NOT_REGISTERED_MSG if model == DEFAULT_MODEL else CUSTOM_MODEL_NOT_FOUND_MSG
+        )
+        raise ModelNotRegisteredError(template.format(model=model))
     if resp.status_code >= 400:
         # Surface Ollama's own error message (e.g. context-size exceeded)
         # instead of a bare HTTP status.
