@@ -96,7 +96,8 @@ local = "roger-local"        # any locally pulled Ollama model (see below)
 
 [ollama]
 url = "http://localhost:11434"
-num_ctx = 8192
+num_ctx = 8192       # context window; raising it feeds the model a larger
+                     # code neighborhood at the cost of RAM and speed
 
 [quiz]
 default_difficulty = "medium"   # simple | medium | hard

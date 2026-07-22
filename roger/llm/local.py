@@ -77,26 +77,29 @@ def call_local(
     model: str = DEFAULT_MODEL,
     base_url: str = OLLAMA_BASE,
     timeout: int = 60,
+    num_ctx: int | None = None,
 ) -> dict:
     """Call Ollama, strip thinking blocks, parse JSON response.
+
+    num_ctx overrides the model's context window per-request, so the
+    config value applies to custom models that have no Roger Modelfile.
 
     Raises OllamaNotRunningError if Ollama is not available.
     Raises ModelNotRegisteredError if the model is not registered.
     Raises ValueError if the response is not valid JSON after stripping.
     """
+    payload: dict = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": False,
+        # MiniCPM5-Thinking otherwise spends its whole num_predict
+        # budget in the thinking phase and truncates the JSON answer.
+        "think": False,
+    }
+    if num_ctx is not None:
+        payload["options"] = {"num_ctx": num_ctx}
     try:
-        resp = requests.post(
-            f"{base_url}/api/chat",
-            json={
-                "model": model,
-                "messages": [{"role": "user", "content": prompt}],
-                "stream": False,
-                # MiniCPM5-Thinking otherwise spends its whole num_predict
-                # budget in the thinking phase and truncates the JSON answer.
-                "think": False,
-            },
-            timeout=timeout,
-        )
+        resp = requests.post(f"{base_url}/api/chat", json=payload, timeout=timeout)
     except requests.RequestException as exc:
         raise OllamaNotRunningError(OLLAMA_NOT_RUNNING_MSG) from exc
 
