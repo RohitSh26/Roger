@@ -701,12 +701,12 @@ def test_prompt_is_certification_style(tmp_path) -> None:
     assert "QUESTION TYPES" in prompt
     assert "Grounded" in prompt         # anti-hallucination rule present
     assert "Cover test" in prompt
+    assert "THE MEMORY RULE" in prompt  # no structure-recall questions
     assert "hard" in prompt
     # The worked example is built from the node's own relationships, so a
     # model that copies it still writes about real code, not foreign names.
     assert "WORKED EXAMPLE" in prompt
-    assert "helper is getting a new required argument" in prompt
-    assert "Correct option: main.py" in prompt
+    assert "Why does main.py hand part of its work to helper" in prompt
 
 
 def test_is_giveaway_rejects_meta_format_leakage() -> None:
@@ -730,3 +730,27 @@ def test_normalize_options_trims_trailing_punctuation() -> None:
     assert options is not None
     assert options["A"] == "knowledge_artifact.py"
     assert options["D"] == "d"
+
+
+def test_build_prompt_includes_real_source_when_available(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.test_graph import REAL_SCHEMA_DATA
+
+    graph_json = tmp_path / "graph.json"
+    graph_json.write_text(json.dumps(REAL_SCHEMA_DATA), encoding="utf-8")
+    src = tmp_path / "app" / "main.py"
+    src.parent.mkdir()
+    src.write_text("def main():\n    return helper() or fallback()\n", encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path)
+    graph = load_graph(str(graph_json))
+    node = get_node(graph, "app_main")  # source_location absent → top of file
+    prompt = router.build_prompt(node, graph, "medium", 2)
+    assert "SOURCE (excerpt from app/main.py" in prompt
+    assert "return helper() or fallback()" in prompt
+
+    # Nodes whose file is gone simply get no SOURCE section.
+    node_no_src = get_node(graph, "app_config")
+    prompt2 = router.build_prompt(node_no_src, graph, "medium", 2)
+    assert "SOURCE (excerpt" not in prompt2
