@@ -56,6 +56,54 @@ written to `.roger/Modelfile`; the ~1.2 GB model weights download the first time
 and creates `.roger/` with a default config and databases. If anything is missing it
 tells you exactly what to run.
 
+## Keeping everything up to date
+
+There are three different things that can go stale. Here's the fix for each:
+
+### 1. Getting the latest Roger (after Roger itself changes)
+
+A plain `pip install git+…` will say "Requirement already satisfied" and give you
+**nothing** — the version number doesn't change between pushes, so pip thinks it's
+current. Always update with:
+
+```bash
+pip install --force-reinstall --no-deps git+https://github.com/RohitSh26/Roger.git
+```
+
+Run that in every venv where Roger is installed. Verify what you got — the
+version bumps with every meaningful change, so this confirms the update landed:
+
+```bash
+pip show roger-cli | grep Version
+```
+
+### 2. After updating Roger: refresh the registered model
+
+If a Roger update changed the model's system prompt (release notes will say so),
+re-register the model once per machine:
+
+```bash
+cd your-repo
+roger init      # safe to re-run: rewrites .roger/Modelfile, re-registers the
+                # model, rebuilds the graph; never overwrites your config.toml
+```
+
+### 3. When your own code changes: rebuild the knowledge graph
+
+The graph is a snapshot — new functions, renames, and deleted code don't appear
+until you rebuild it:
+
+```bash
+graphify ./ --code-only     # fast graph-only rebuild
+# or: roger init            # same rebuild + model/config checks
+```
+
+Cached questions take care of themselves: they're keyed by a hash of each
+function's code neighborhood, so changed code automatically gets fresh questions
+and unchanged code keeps its instant cache hits. A good habit is rebuilding the
+graph before a quiz session or after merging a significant branch.
+(`roger update` will automate this in a later phase.)
+
 ## Commands
 
 | Command | What it does |
