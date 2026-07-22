@@ -146,3 +146,18 @@ def test_node_display_names_builds_labels() -> None:
     ]
     names = quiz_module.node_display_names(graph, questions)
     assert names == {"pkg_do_work": "do_work (src/module.py)", "bare": "bare"}
+
+
+def test_run_quiz_renders_snippet_and_escapes_markup(monkeypatch: pytest.MonkeyPatch) -> None:
+    question = make_question(node_id="n1", text="Which is the real line?", correct="A")
+    question.snippet = "if items[0] == sentinel:\n    ________________"
+    question.options = {"A": "return [x] or None", "B": "raise KeyError", "C": "pass", "D": "break"}
+    pressed = iter(["A"])
+    monkeypatch.setattr(quiz_module, "collect_keypress", lambda: next(pressed))
+    buffer = io.StringIO()
+    console = Console(file=buffer, force_terminal=False, width=100)
+    run_quiz([question], session_type="quiz", pass_threshold=1, console=console)
+    output = buffer.getvalue()
+    assert "items[0] == sentinel" in output   # snippet shown, brackets survive
+    assert "________________" in output
+    assert "return [x] or None" in output     # option markup not eaten by Rich
