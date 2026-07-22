@@ -1,0 +1,312 @@
+"""Tests for generation: hashing, LLM client parsing, routing, caching, selection."""
+
+from __future__ import annotations
+
+import json
+
+import networkx as nx
+import pytest
+import requests
+
+from roger import generator
+from roger.exceptions import ModelNotRegisteredError, OllamaNotRunningError
+from roger.graph import get_node, get_subgraph, load_graph
+from roger.llm import local, router
+from tests.conftest import GRAPH_DATA, make_question
+
+# --- hash_node ---------------------------------------------------------------
+
+
+def _node_and_subgraph(graph: nx.DiGraph, node_id: str):
+    return get_node(graph, node_id), get_subgraph(graph, node_id, hops=1)
+
+
+def test_hash_is_stable_across_loads(graph_file) -> None:
+    graph_a = load_graph(str(graph_file))
+    graph_b = load_graph(str(graph_file))
+    hash_a = generator.hash_node(*_node_and_subgraph(graph_a, "payments.charge"))
+    hash_b = generator.hash_node(*_node_and_subgraph(graph_b, "payments.charge"))
+    assert hash_a == hash_b
+    assert len(hash_a) == 64  # sha-256 hex
+
+
+def test_hash_changes_when_neighbor_changes(graph: nx.DiGraph) -> None:
+    before = generator.hash_node(*_node_and_subgraph(graph, "payments.charge"))
+    graph.nodes["db.connect"]["description"] = "Opens a pooled database connection"
+    after = generator.hash_node(*_node_and_subgraph(graph, "payments.charge"))
+    assert before != after
+
+
+def test_hash_ignores_unrelated_changes(graph: nx.DiGraph) -> None:
+    before = generator.hash_node(*_node_and_subgraph(graph, "auth.hash_password"))
+    graph.nodes["payments.notify"]["description"] = "totally different"
+    after = generator.hash_node(*_node_and_subgraph(graph, "auth.hash_password"))
+    assert before == after
+
+
+# --- strip_thinking ----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ('{"a": 1}', '{"a": 1}'),  # no thinking block
+        ('<think>hmm</think>{"a": 1}', '{"a": 1}'),
+        ('<think>line one\nline two</think>\n{"a": 1}', '{"a": 1}'),  # multiline
+        ('<think>x</think>{"a": 1}<think>y</think>', '{"a": 1}'),  # multiple blocks
+        ("<think>only thoughts</think>", ""),  # nothing left
+        ('  <think>a</think>   {"a": 1}  ', '{"a": 1}'),  # whitespace trimmed
+        ("no tags at all", "no tags at all"),
+    ],
+)
+def test_strip_thinking(raw: str, expected: str) -> None:
+    assert local.strip_thinking(raw) == expected
+
+
+# --- call_local (mocked Ollama) ------------------------------------------------
+
+
+class FakeResponse:
+    def __init__(self, payload: dict, status_code: int = 200):
+        self._payload = payload
+        self.status_code = status_code
+
+    def json(self) -> dict:
+        return self._payload
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"status {self.status_code}")
+
+
+def test_call_local_strips_thinking_and_parses_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    content = '<think>let me reason</think>{"questions": []}'
+    monkeypatch.setattr(
+        local.requests,
+        "post",
+        lambda *a, **k: FakeResponse({"message": {"content": content}}),
+    )
+    assert local.call_local("prompt") == {"questions": []}
+
+
+def test_call_local_invalid_json_raises_value_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    content = "<think>hmm</think>not json at all"
+    monkeypatch.setattr(
+        local.requests,
+        "post",
+        lambda *a, **k: FakeResponse({"message": {"content": content}}),
+    )
+    with pytest.raises(ValueError):
+        local.call_local("prompt")
+
+
+def test_call_local_connection_error_raises_ollama_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(*args, **kwargs):
+        raise requests.ConnectionError("refused")
+
+    monkeypatch.setattr(local.requests, "post", boom)
+    with pytest.raises(OllamaNotRunningError):
+        local.call_local("prompt")
+
+
+def test_call_local_404_raises_model_not_registered(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        local.requests, "post", lambda *a, **k: FakeResponse({}, status_code=404)
+    )
+    with pytest.raises(ModelNotRegisteredError):
+        local.call_local("prompt")
+
+
+# --- router ------------------------------------------------------------------
+
+
+VALID_RAW = {
+    "questions": [
+        {
+            "question": "What does charge() do?",
+            "options": {"A": "a", "B": "b", "C": "c", "D": "d"},
+            "correct": "B",
+            "explanation": "Because.",
+        }
+    ]
+}
+
+
+def test_parse_questions_valid() -> None:
+    questions = router.parse_questions(VALID_RAW, node_id="n1", difficulty="medium", tier=1)
+    assert len(questions) == 1
+    q = questions[0]
+    assert q.node_id == "n1"
+    assert q.correct == "B"
+    assert q.difficulty == "medium"
+    assert q.tier == 1
+
+
+def test_parse_questions_skips_malformed_items() -> None:
+    raw = {
+        "questions": [
+            {"question": "missing options", "correct": "A"},
+            {"question": "bad correct", "options": {"A": "a", "B": "b", "C": "c", "D": "d"}, "correct": "E"},
+            VALID_RAW["questions"][0],
+        ]
+    }
+    questions = router.parse_questions(raw, node_id="n1", difficulty="hard", tier=1)
+    assert len(questions) == 1
+
+
+def test_parse_questions_no_valid_items_raises() -> None:
+    with pytest.raises(ValueError):
+        router.parse_questions({"questions": []}, node_id="n1", difficulty="medium", tier=1)
+    with pytest.raises(ValueError):
+        router.parse_questions({"nope": True}, node_id="n1", difficulty="medium", tier=1)
+
+
+def test_router_simple_uses_templates_without_llm(
+    graph: nx.DiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def no_network(*args, **kwargs):
+        raise AssertionError("Tier 0 must not touch Ollama")
+
+    monkeypatch.setattr(local, "is_ollama_running", no_network)
+    monkeypatch.setattr(local, "call_local", no_network)
+
+    node = get_node(graph, "payments.process_payment")
+    questions = router.get_questions(node, graph, difficulty="simple", count=5)
+    assert questions
+    assert all(q.tier == 0 for q in questions)
+
+
+def test_router_medium_raises_when_ollama_down(
+    graph: nx.DiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(local, "is_ollama_running", lambda *a, **k: False)
+    node = get_node(graph, "payments.process_payment")
+    with pytest.raises(OllamaNotRunningError) as excinfo:
+        router.get_questions(node, graph, difficulty="medium", count=5)
+    assert "ollama serve" in str(excinfo.value)
+
+
+def test_router_medium_calls_local_llm(
+    graph: nx.DiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prompts: list[str] = []
+
+    def fake_call_local(prompt: str, **kwargs) -> dict:
+        prompts.append(prompt)
+        return VALID_RAW
+
+    monkeypatch.setattr(local, "is_ollama_running", lambda *a, **k: True)
+    monkeypatch.setattr(local, "call_local", fake_call_local)
+
+    node = get_node(graph, "payments.charge")
+    questions = router.get_questions(node, graph, difficulty="medium", count=3)
+    assert len(questions) == 1
+    assert questions[0].tier == 1
+    # The prompt must carry the node context and its neighborhood.
+    assert "payments.charge" in prompts[0]
+    assert "db.connect" in prompts[0]
+    assert "medium" in prompts[0]
+
+
+def test_router_rejects_unknown_difficulty(graph: nx.DiGraph) -> None:
+    node = get_node(graph, "payments.charge")
+    with pytest.raises(ValueError):
+        router.get_questions(node, graph, difficulty="impossible", count=5)
+
+
+# --- generate_questions: caching ----------------------------------------------
+
+
+@pytest.fixture
+def graph_in_repo(in_tmp_repo, monkeypatch: pytest.MonkeyPatch) -> nx.DiGraph:
+    """A graph whose .roger/ cache lives in an isolated tmp cwd."""
+    path = in_tmp_repo / "graphify-out" / "graph.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(GRAPH_DATA), encoding="utf-8")
+    return load_graph(str(path))
+
+
+def test_generate_questions_caches_llm_output(
+    graph_in_repo: nx.DiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = {"count": 0}
+
+    def fake_llm(node, graph, difficulty, count, config=None):
+        calls["count"] += 1
+        return [make_question(node_id=node["id"], text=f"Q about {node['id']}?")]
+
+    monkeypatch.setattr(generator, "get_questions_from_llm", fake_llm)
+
+    node_ids = ["payments.charge", "db.connect"]
+    first = generator.generate_questions(node_ids, graph_in_repo, "medium", count=2)
+    assert calls["count"] == 2
+    assert len(first) == 2
+
+    second = generator.generate_questions(node_ids, graph_in_repo, "medium", count=2)
+    assert calls["count"] == 2  # cache hit: no new LLM calls
+    assert {q.question for q in second} == {q.question for q in first}
+
+
+def test_generate_questions_regenerates_for_new_difficulty(
+    graph_in_repo: nx.DiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = {"count": 0}
+
+    def fake_llm(node, graph, difficulty, count, config=None):
+        calls["count"] += 1
+        return [make_question(node_id=node["id"], difficulty=difficulty)]
+
+    monkeypatch.setattr(generator, "get_questions_from_llm", fake_llm)
+
+    generator.generate_questions(["payments.charge"], graph_in_repo, "medium", count=1)
+    generator.generate_questions(["payments.charge"], graph_in_repo, "hard", count=1)
+    assert calls["count"] == 2  # difficulty mismatch is a cache miss
+
+
+def test_generate_questions_regenerates_when_code_changes(
+    graph_in_repo: nx.DiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = {"count": 0}
+
+    def fake_llm(node, graph, difficulty, count, config=None):
+        calls["count"] += 1
+        return [make_question(node_id=node["id"])]
+
+    monkeypatch.setattr(generator, "get_questions_from_llm", fake_llm)
+
+    generator.generate_questions(["payments.charge"], graph_in_repo, "medium", count=1)
+    graph_in_repo.nodes["payments.charge"]["description"] = "changed implementation"
+    generator.generate_questions(["payments.charge"], graph_in_repo, "medium", count=1)
+    assert calls["count"] == 2  # new hash → regenerated
+
+
+# --- select_questions ----------------------------------------------------------
+
+
+def test_select_questions_prefers_god_nodes() -> None:
+    pool = [
+        make_question(node_id="minor.node", text="minor q1?"),
+        make_question(node_id="minor.node", text="minor q2?"),
+        make_question(node_id="god.node", text="god q1?"),
+        make_question(node_id="god.node", text="god q2?"),
+    ]
+    selected = generator.select_questions(pool, count=2, god_node_ids=["god.node"])
+    assert len(selected) == 2
+    assert selected[0].node_id == "god.node"
+    # Variety: round-robin means the second pick comes from the other node.
+    assert selected[1].node_id == "minor.node"
+
+
+def test_select_questions_dedupes_and_respects_count() -> None:
+    pool = [
+        make_question(node_id="a", text="same text?"),
+        make_question(node_id="a", text="same text?"),
+        make_question(node_id="b", text="other text?"),
+    ]
+    selected = generator.select_questions(pool, count=5, god_node_ids=[])
+    texts = [q.question for q in selected]
+    assert len(texts) == len(set(texts)) == 2
+
+
+def test_select_questions_empty_pool() -> None:
+    assert generator.select_questions([], count=5, god_node_ids=[]) == []
