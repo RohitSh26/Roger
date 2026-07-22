@@ -456,3 +456,33 @@ def test_router_gives_up_after_three_attempts(
     with pytest.raises(ValueError):
         router.get_questions(node, graph, difficulty="medium", count=2)
     assert attempts["n"] == 3
+
+
+# --- embedded Modelfile ----------------------------------------------------------
+
+
+def test_embedded_modelfile_matches_checkout_copy() -> None:
+    from pathlib import Path
+
+    repo_modelfile = Path(__file__).resolve().parent.parent / "local" / "Modelfile"
+    assert local.MODELFILE_CONTENT == repo_modelfile.read_text(encoding="utf-8")
+
+
+def test_ensure_modelfile_writes_embedded_copy(in_tmp_repo) -> None:
+    from roger import cli
+
+    path = cli._ensure_modelfile()
+    assert path == cli.ROGER_DIR / "Modelfile"
+    assert path.read_text(encoding="utf-8") == local.MODELFILE_CONTENT
+
+
+def test_ensure_modelfile_prefers_checkout_copy(in_tmp_repo) -> None:
+    from pathlib import Path
+
+    from roger import cli
+
+    checkout = Path("local/Modelfile")
+    checkout.parent.mkdir()
+    checkout.write_text("FROM custom-model\n", encoding="utf-8")
+    assert cli._ensure_modelfile() == checkout
+    assert not (cli.ROGER_DIR / "Modelfile").exists()

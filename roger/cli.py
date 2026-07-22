@@ -26,6 +26,7 @@ from roger.exceptions import (
 from roger.generator import generate_questions
 from roger.graph import get_god_nodes, load_graph
 from roger.hooks.pre_commit import install_hook, run_guard, uninstall_hook
+from roger.llm.local import MODELFILE_CONTENT
 from roger.quiz import run_quiz
 from roger.storage import init_dbs, record_session
 
@@ -46,20 +47,20 @@ def _fail(message: str) -> None:
     raise typer.Exit(code=1)
 
 
-def _find_modelfile() -> Path:
-    """Locate local/Modelfile: target repo first, then Roger's own checkout."""
-    candidates = [
-        Path("local/Modelfile"),
-        Path(__file__).resolve().parent.parent / "local" / "Modelfile",
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    _fail(
-        "✗ Roger: local/Modelfile not found.\n"
-        "  Reinstall roger-cli or run init from the Roger repository."
-    )
-    raise AssertionError("unreachable")
+def _ensure_modelfile() -> Path:
+    """Return a Modelfile path, materializing the embedded copy if needed.
+
+    A checkout's local/Modelfile (cwd) wins so it stays user-editable; wheel
+    installs don't ship that file, so init writes the embedded content to
+    .roger/Modelfile instead.
+    """
+    checkout = Path("local/Modelfile")
+    if checkout.exists():
+        return checkout
+    target = ROGER_DIR / "Modelfile"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(MODELFILE_CONTENT, encoding="utf-8")
+    return target
 
 
 @app.command()
@@ -107,7 +108,7 @@ def init() -> None:
         )
 
     # 5. Register the model.
-    modelfile = _find_modelfile()
+    modelfile = _ensure_modelfile()
     console.print(f"Registering model '{config.model.local}' (downloads ~1.15 GB on first run)…")
     try:
         subprocess.run(

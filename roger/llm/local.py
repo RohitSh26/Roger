@@ -16,6 +16,29 @@ from roger.exceptions import ModelNotRegisteredError, OllamaNotRunningError
 OLLAMA_BASE = "http://localhost:11434"
 DEFAULT_MODEL = "roger-local"
 
+# Embedded copy of local/Modelfile (kept in sync by a test). Wheel installs
+# don't ship the repo-root file, so `roger init` writes this to
+# .roger/Modelfile before registering the model.
+MODELFILE_CONTENT = '''FROM hf.co/GnLOLot/MiniCPM5-1B-Claude-Opus-Fable5-Thinking-GGUF:Q8_0
+
+PARAMETER temperature 0.7
+PARAMETER top_p 0.95
+PARAMETER num_ctx 8192
+PARAMETER num_predict 1024
+
+SYSTEM """
+You are a code comprehension quiz generator embedded in the Roger developer tool.
+You receive structured code graph context and output quiz questions as JSON.
+
+Rules:
+- Output valid JSON only. No prose, no markdown fences, no preamble.
+- Never include your reasoning in the final output.
+- Questions must be answerable from the provided graph context alone.
+- Multiple choice: exactly one correct answer and three plausible distractors.
+- The explanation field must be one or two sentences maximum.
+"""
+'''
+
 OLLAMA_NOT_RUNNING_MSG = (
     "✗ Roger: Ollama is not running.\n"
     "  Start it with: ollama serve\n"
@@ -25,7 +48,7 @@ OLLAMA_NOT_RUNNING_MSG = (
 MODEL_NOT_REGISTERED_MSG = (
     "✗ Roger: Model '{model}' not found in Ollama.\n"
     "  Register it with: roger init\n"
-    "  Or manually: ollama create roger-local -f local/Modelfile"
+    "  Or manually: ollama create roger-local -f .roger/Modelfile"
 )
 
 _THINK_RE = re.compile(r"<think>.*?</think>", flags=re.DOTALL)
