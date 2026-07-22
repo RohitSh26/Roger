@@ -49,13 +49,19 @@ Generate exactly {count} questions. Respond with JSON only, no other text:
 """
 
 
-# Budget for the serialized neighborhood inside the prompt. The Modelfile
-# sets num_ctx 8192 and num_predict 1024; code identifiers tokenize at
-# roughly 3 chars/token, so ~15K chars keeps the whole request comfortably
-# under the context window. God nodes with hundreds of neighbors otherwise
-# produce 200K+ char prompts that Ollama rejects outright.
-MAX_SUBGRAPH_CHARS = 15_000
+DEFAULT_NUM_CTX = 8192
 MAX_LISTED_NEIGHBORS = 15
+
+
+def _subgraph_char_budget(num_ctx: int) -> int:
+    """Prompt budget for the serialized neighborhood, derived from num_ctx.
+
+    Reserve ~2K tokens for the output (num_predict 1024), the system prompt,
+    and the template; code identifiers tokenize at roughly 2.5 chars/token.
+    At the default 8192 this yields ~15K chars — god nodes with hundreds of
+    neighbors otherwise produce 200K+ char prompts Ollama rejects outright.
+    """
+    return max(4_000, (num_ctx - 2_048) * 5 // 2)
 
 
 def _cap_list(items: list[str], limit: int = MAX_LISTED_NEIGHBORS) -> str:
@@ -66,7 +72,13 @@ def _cap_list(items: list[str], limit: int = MAX_LISTED_NEIGHBORS) -> str:
     return f"{shown} (+{hidden} more)" if hidden > 0 else shown
 
 
-def build_prompt(node: dict, graph: nx.DiGraph, difficulty: str, count: int) -> str:
+def build_prompt(
+    node: dict,
+    graph: nx.DiGraph,
+    difficulty: str,
+    count: int,
+    num_ctx: int = DEFAULT_NUM_CTX,
+) -> str:
     """Fill the question-generation prompt with node + 1-hop subgraph context."""
     subgraph = g.get_subgraph(graph, node["id"], hops=1)
     return PROMPT_TEMPLATE.format(
@@ -79,7 +91,9 @@ def build_prompt(node: dict, graph: nx.DiGraph, difficulty: str, count: int) -> 
         callers=_cap_list(node.get("callers", [])),
         callees=_cap_list(node.get("callees", [])),
         returns=node.get("returns", "") or "unknown",
-        serialized_subgraph=g.serialize_subgraph(subgraph, max_chars=MAX_SUBGRAPH_CHARS),
+        serialized_subgraph=g.serialize_subgraph(
+            subgraph, max_chars=_subgraph_char_budget(num_ctx)
+        ),
     )
 
 
@@ -163,13 +177,18 @@ def get_questions(
     if not local.is_ollama_running(config.ollama.url):
         raise OllamaNotRunningError(local.OLLAMA_NOT_RUNNING_MSG)
 
-    prompt = build_prompt(node, graph, difficulty, count)
+    prompt = build_prompt(node, graph, difficulty, count, num_ctx=config.ollama.num_ctx)
     # A 1B model at temperature 0.7 occasionally emits an unusable shape;
     # a fresh sample usually fixes it, so retry before giving up.
     last_error: Exception = ValueError("no attempts made")
     for _ in range(3):
         try:
-            raw = local.call_local(prompt, model=config.model.local, base_url=config.ollama.url)
+            raw = local.call_local(
+                prompt,
+                model=config.model.local,
+                base_url=config.ollama.url,
+                num_ctx=config.ollama.num_ctx,
+            )
             return parse_questions(raw, node_id=node["id"], difficulty=difficulty, tier=1)
         except ValueError as exc:
             last_error = exc

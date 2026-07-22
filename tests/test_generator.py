@@ -342,9 +342,14 @@ def test_build_prompt_caps_huge_neighborhoods(graph: nx.DiGraph) -> None:
     node = get_node(graph, "payments.charge")
     assert len(node["callers"]) > 400
     prompt = router.build_prompt(node, graph, "medium", 5)
-    assert len(prompt) < router.MAX_SUBGRAPH_CHARS + 3_000  # subgraph budget + template
+    budget = router._subgraph_char_budget(router.DEFAULT_NUM_CTX)
+    assert len(prompt) < budget + 3_000  # subgraph budget + template overhead
     assert "omitted" in prompt
     assert "more)" in prompt  # capped caller list
+
+    # A larger context window buys a larger neighborhood budget.
+    roomier = router.build_prompt(node, graph, "medium", 5, num_ctx=32_768)
+    assert len(roomier) > len(prompt)
 
 
 # --- lenient JSON parsing (small-model output salvage) --------------------------
@@ -557,3 +562,17 @@ def test_ensure_model_registers_default_from_modelfile(
 
     assert commands[0][:3] == ["ollama", "create", "roger-local"]
     assert (cli.ROGER_DIR / "Modelfile").exists()
+
+
+def test_call_local_sends_num_ctx_option(monkeypatch: pytest.MonkeyPatch) -> None:
+    payloads: list[dict] = []
+
+    def fake_post(url, json=None, timeout=None):
+        payloads.append(json)
+        return FakeResponse({"message": {"content": '{"questions": []}'}})
+
+    monkeypatch.setattr(local.requests, "post", fake_post)
+    local.call_local("prompt", num_ctx=16_384)
+    assert payloads[0]["options"] == {"num_ctx": 16_384}
+    local.call_local("prompt")  # without num_ctx the Modelfile governs
+    assert "options" not in payloads[1]
