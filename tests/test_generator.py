@@ -343,7 +343,7 @@ def test_build_prompt_caps_huge_neighborhoods(graph: nx.DiGraph) -> None:
     assert len(node["callers"]) > 400
     prompt = router.build_prompt(node, graph, "medium", 5)
     budget = router._subgraph_char_budget(router.DEFAULT_NUM_CTX)
-    assert len(prompt) < budget + 3_000  # subgraph budget + template overhead
+    assert len(prompt) < budget + 4_000  # subgraph budget + template overhead
     assert "omitted" in prompt
     assert "more)" in prompt  # capped caller list
 
@@ -606,7 +606,12 @@ def test_is_giveaway_rejects_name_echo_and_verbatim_answers() -> None:
         "Does load_config returns the parsed config object?", options2, "A", subject="load_config"
     )
 
-    options3 = {"A": "opens a pooled connection", "B": "b", "C": "c", "D": "d"}
+    options3 = {
+        "A": "opens a pooled connection",
+        "B": "closes idle sessions",
+        "C": "reloads configuration",
+        "D": "starts the scheduler",
+    }
     assert not router._is_giveaway(
         "What does connect() do on startup?", options3, "A", subject="db.connect"
     )
@@ -659,3 +664,69 @@ def test_generate_questions_raises_when_every_node_fails(
     monkeypatch.setattr(generator, "get_questions_from_llm", always_fails)
     with pytest.raises(ValueError):
         generator.generate_questions(["payments.charge"], graph_in_repo, "medium", count=2)
+
+
+def test_is_giveaway_rejects_length_tell() -> None:
+    # Correct option far longer/more detailed than every distractor — the
+    # classic amateur-quiz giveaway.
+    options = {
+        "A": "it validates the card and then charges it via the payment gateway",
+        "B": "logs output",
+        "C": "sends email",
+        "D": "retries once",
+    }
+    assert router._is_giveaway("What does the processor do?", options, "A", subject="processor")
+    # Short name-style options must never trip the length check.
+    names = {"A": "process_payment", "B": "notify", "C": "charge", "D": "refund"}
+    assert not router._is_giveaway("Which code calls charge?", names, "A", subject="charge")
+
+
+def test_hash_changes_when_question_style_version_bumps(
+    graph: nx.DiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    before = generator.hash_node(*_node_and_subgraph(graph, "payments.charge"))
+    monkeypatch.setattr(generator, "QUESTION_STYLE_VERSION", 999)
+    after = generator.hash_node(*_node_and_subgraph(graph, "payments.charge"))
+    assert before != after  # style bumps must invalidate the team-wide cache
+
+
+def test_prompt_is_certification_style(tmp_path) -> None:
+    from tests.test_graph import REAL_SCHEMA_DATA
+
+    path = tmp_path / "graph.json"
+    path.write_text(json.dumps(REAL_SCHEMA_DATA), encoding="utf-8")
+    graph = load_graph(str(path))
+    node = get_node(graph, "app_main")
+    prompt = router.build_prompt(node, graph, "hard", 2)
+    assert "QUESTION TYPES" in prompt
+    assert "Grounded" in prompt         # anti-hallucination rule present
+    assert "Cover test" in prompt
+    assert "hard" in prompt
+    # The worked example is built from the node's own relationships, so a
+    # model that copies it still writes about real code, not foreign names.
+    assert "WORKED EXAMPLE" in prompt
+    assert "helper is getting a new required argument" in prompt
+    assert "Correct option: main.py" in prompt
+
+
+def test_is_giveaway_rejects_meta_format_leakage() -> None:
+    # The model copied the worked example's format — answer included — into
+    # the question text itself.
+    options = {"A": "kb_agent.py", "B": "run_task", "C": "_raw_model_step", "D": "helpers"}
+    leaked = (
+        "Which of these must be updated to pass _is_provider_400()? "
+        "Correct: _model_step(), because it calls it. Options: A: kb_agent.py"
+    )
+    assert router._is_giveaway(leaked, options, "A", subject="_model_step()")
+    assert not router._is_giveaway(
+        "Which of these must be updated when _is_provider_400() changes?",
+        options, "A", subject="_model_step()",
+    )
+
+
+def test_normalize_options_trims_trailing_punctuation() -> None:
+    raw = {"A": " knowledge_artifact.py; ", "B": "b", "C": "c", "D": "d,"}
+    options = router._normalize_options(raw)
+    assert options is not None
+    assert options["A"] == "knowledge_artifact.py"
+    assert options["D"] == "d"

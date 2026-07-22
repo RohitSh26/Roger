@@ -14,6 +14,11 @@ from roger.llm.router import get_questions as get_questions_from_llm
 from roger.models import Question
 from roger.storage import cache_questions, get_cached_questions
 
+# Bump when question generation changes materially (prompt style, filters).
+# The version feeds the cache key, so everyone's stale-style questions
+# regenerate automatically — no manual cache clearing across a team.
+QUESTION_STYLE_VERSION = 4
+
 
 def hash_node(node: dict, subgraph: nx.DiGraph) -> str:
     """SHA-256 of node attributes + serialized subgraph. Cache key.
@@ -22,7 +27,12 @@ def hash_node(node: dict, subgraph: nx.DiGraph) -> str:
     so identical code always produces an identical hash.
     """
     canonical_node = json.dumps(node, sort_keys=True, default=str)
-    payload = canonical_node + "\n" + g.serialize_subgraph(subgraph)
+    payload = (
+        f"style-v{QUESTION_STYLE_VERSION}\n"
+        + canonical_node
+        + "\n"
+        + g.serialize_subgraph(subgraph)
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
