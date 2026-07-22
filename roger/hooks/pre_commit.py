@@ -16,8 +16,8 @@ from pathlib import Path
 from roger.config import load_config
 from roger.exceptions import GraphNotFoundError, ModelNotRegisteredError, OllamaNotRunningError
 from roger.generator import generate_questions
-from roger.graph import get_changed_nodes, load_graph
-from roger.quiz import run_quiz
+from roger.graph import get_changed_nodes, get_quizzable_nodes, load_graph
+from roger.quiz import node_display_names, run_quiz
 from roger.storage import record_session, record_skip
 
 HOOK_PATH = Path(".git/hooks/pre-commit")
@@ -50,6 +50,10 @@ def run_guard() -> None:
         sys.exit(0)
 
     changed_nodes = get_changed_nodes(graph, staged_files)
+    # Tests stay in scope for guard (the developer changed them), but doc
+    # stubs and entry markers make meaningless questions.
+    quizzable = set(get_quizzable_nodes(graph, exclude_tests=False))
+    changed_nodes = [n for n in changed_nodes if n in quizzable]
     if not changed_nodes:
         sys.exit(0)
 
@@ -70,7 +74,10 @@ def run_guard() -> None:
         sys.exit(0)
 
     result = run_quiz(
-        questions, session_type="guard", pass_threshold=config.quiz.pass_threshold
+        questions,
+        session_type="guard",
+        pass_threshold=config.quiz.pass_threshold,
+        node_names=node_display_names(graph, questions),
     )
     record_session(result)
 

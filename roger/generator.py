@@ -78,6 +78,7 @@ def generate_questions(
     """
     config = config or Config()
     pool: list[Question] = []
+    last_error: Exception | None = None
 
     # Ask each node for a small batch rather than `count` apiece: the 1B
     # model must fit its JSON inside num_predict tokens, and long node ids
@@ -97,9 +98,18 @@ def generate_questions(
                 pool.extend(matching)
                 continue
 
-        questions = get_questions_from_llm(node, graph, difficulty, per_node, config=config)
+        try:
+            questions = get_questions_from_llm(node, graph, difficulty, per_node, config=config)
+        except ValueError as exc:
+            # One node the model can't write valid questions for must not
+            # kill the whole quiz — skip it and quiz on the rest.
+            last_error = exc
+            continue
         cache_questions(node_hash, node_id, difficulty, questions, config.model.local)
         pool.extend(questions)
+
+    if not pool and last_error is not None:
+        raise last_error
 
     god_node_ids = g.get_god_nodes(graph) if config.graph.god_node_weight else []
     return select_questions(pool, count, god_node_ids)

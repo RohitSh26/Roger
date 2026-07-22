@@ -27,6 +27,32 @@ def _community_pool(node: dict, graph: nx.DiGraph) -> list[str]:
     )
 
 
+def _name(node: dict) -> str:
+    """Human-readable name of the target node."""
+    return str(node.get("display") or node["id"])
+
+
+def _display(graph: nx.DiGraph, node_id: str) -> str:
+    return str(graph.nodes[node_id].get("display") or node_id)
+
+
+def _display_values(graph: nx.DiGraph, node_ids: list[str]) -> list[str]:
+    """Readable option texts for node IDs, disambiguated when labels collide."""
+    names = [_display(graph, n) for n in node_ids]
+    values = []
+    for node_id, name in zip(node_ids, names):
+        if names.count(name) > 1:
+            file = str(graph.nodes[node_id].get("file", "")).rsplit("/", 1)[-1]
+            name = f"{name} ({file})" if file else name
+        values.append(name)
+    if len(set(values)) != len(values):  # same label AND same file — use the id
+        values = [
+            v if values.count(v) == 1 else f"{v} [{node_id}]"
+            for v, node_id in zip(values, node_ids)
+        ]
+    return values
+
+
 def _pick_distractors(
     preferred: list[str],
     fallback: list[str],
@@ -75,21 +101,23 @@ def caller_question(
     callers = node.get("callers") or []
     if not callers:
         return None
-    correct = rng.choice(callers)
-    distractors = _pick_distractors(
+    correct_id = rng.choice(callers)
+    distractor_ids = _pick_distractors(
         preferred=_community_pool(node, graph),
         fallback=sorted(graph.nodes),
         exclude={node["id"], *callers},
         rng=rng,
     )
-    if distractors is None:
+    if distractor_ids is None:
         return None
+    values = _display_values(graph, [correct_id, *distractor_ids])
+    name = _name(node)
     return _make_question(
         node,
-        f"Which of the following calls `{node['id']}()`?",
-        correct,
-        distractors,
-        f"`{correct}` is a direct caller of `{node['id']}` in the code graph.",
+        f"Which of the following calls `{name}()`?",
+        values[0],
+        values[1:],
+        f"`{values[0]}` calls `{name}` directly.",
         rng,
     )
 
@@ -102,21 +130,23 @@ def dependency_question(
     callees = node.get("callees") or []
     if not callees:
         return None
-    correct = rng.choice(callees)
-    distractors = _pick_distractors(
+    correct_id = rng.choice(callees)
+    distractor_ids = _pick_distractors(
         preferred=_community_pool(node, graph),
         fallback=sorted(graph.nodes),
         exclude={node["id"], *callees},
         rng=rng,
     )
-    if distractors is None:
+    if distractor_ids is None:
         return None
+    values = _display_values(graph, [correct_id, *distractor_ids])
+    name = _name(node)
     return _make_question(
         node,
-        f"What does `{node['id']}()` directly call?",
-        correct,
-        distractors,
-        f"`{node['id']}` calls `{correct}` directly, per the code graph.",
+        f"What does `{name}()` directly call?",
+        values[0],
+        values[1:],
+        f"`{name}` calls `{values[0]}` directly.",
         rng,
     )
 
@@ -143,12 +173,13 @@ def module_question(
     )
     if distractors is None:
         return None
+    name = _name(node)
     return _make_question(
         node,
-        f"Which module/layer does `{node['id']}` belong to?",
+        f"Which module/layer does `{name}` belong to?",
         str(community),
         distractors,
-        f"`{node['id']}` is part of the `{community}` community in the code graph.",
+        f"`{name}` belongs to the `{community}` module.",
         rng,
     )
 
@@ -180,12 +211,13 @@ def return_type_question(
     )
     if distractors is None:
         return None
+    name = _name(node)
     return _make_question(
         node,
-        f"What does `{node['id']}()` return?",
+        f"What does `{name}()` return?",
         str(returns),
         distractors,
-        f"`{node['id']}` returns `{returns}`, per the code graph.",
+        f"`{name}` returns `{returns}`.",
         rng,
     )
 
@@ -213,12 +245,13 @@ def location_question(
     )
     if distractors is None:
         return None
+    name = _name(node)
     return _make_question(
         node,
-        f"In which file is `{node['id']}` defined?",
+        f"In which file is `{name}` defined?",
         str(file),
         distractors,
-        f"`{node['id']}` is defined in `{file}`.",
+        f"`{name}` is defined in `{file}`.",
         rng,
     )
 

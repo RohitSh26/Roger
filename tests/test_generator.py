@@ -576,3 +576,86 @@ def test_call_local_sends_num_ctx_option(monkeypatch: pytest.MonkeyPatch) -> Non
     assert payloads[0]["options"] == {"num_ctx": 16_384}
     local.call_local("prompt")  # without num_ctx the Modelfile governs
     assert "options" not in payloads[1]
+
+
+# --- question quality: labels in prompts, giveaway rejection ---------------------
+
+
+def test_build_prompt_uses_labels_not_slugs(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from tests.test_graph import REAL_SCHEMA_DATA
+
+    path = tmp_path / "graph.json"
+    path.write_text(json.dumps(REAL_SCHEMA_DATA), encoding="utf-8")
+    graph = load_graph(str(path))
+
+    node = get_node(graph, "app_helper")  # label "helper", called by "main.py"
+    prompt = router.build_prompt(node, graph, "medium", 2)
+    assert "Name: helper" in prompt
+    assert "main.py" in prompt          # caller shown by its label
+    assert "app_main" not in prompt     # slug never leaks into the prompt
+    assert "RULES" in prompt
+    assert "self-answering" in prompt
+
+
+def test_is_giveaway_rejects_name_echo_and_verbatim_answers() -> None:
+    options = {"A": "usage", "B": "parses args", "C": "sends mail", "D": "retries"}
+    assert router._is_giveaway("What is usage()?", options, "A", subject="usage()")
+
+    options2 = {"A": "returns the parsed config object", "B": "x", "C": "y", "D": "z"}
+    assert router._is_giveaway(
+        "Does load_config returns the parsed config object?", options2, "A", subject="load_config"
+    )
+
+    options3 = {"A": "opens a pooled connection", "B": "b", "C": "c", "D": "d"}
+    assert not router._is_giveaway(
+        "What does connect() do on startup?", options3, "A", subject="db.connect"
+    )
+
+
+def test_parse_questions_drops_self_answering_items() -> None:
+    raw = {
+        "questions": [
+            {
+                "question": "What is make_broker_deps?",
+                "options": {"A": "make broker deps", "B": "b", "C": "c", "D": "d"},
+                "correct": "A",
+            },
+            {
+                "question": "What breaks if the search backend is down?",
+                "options": {"A": "startup fails", "B": "silent retry", "C": "cache serves", "D": "nothing"},
+                "correct": "B",
+            },
+        ]
+    }
+    questions = router.parse_questions(
+        raw, node_id="n1", difficulty="medium", tier=1, subject="make_broker_deps"
+    )
+    assert len(questions) == 1
+    assert "search backend" in questions[0].question
+
+
+def test_generate_questions_skips_nodes_the_model_cannot_handle(
+    graph_in_repo: nx.DiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def flaky_llm(node, graph, difficulty, count, config=None):
+        if node["id"] == "payments.charge":
+            raise ValueError("model kept writing giveaway questions")
+        return [make_question(node_id=node["id"], text=f"Q {node['id']}?")]
+
+    monkeypatch.setattr(generator, "get_questions_from_llm", flaky_llm)
+    questions = generator.generate_questions(
+        ["payments.charge", "db.connect"], graph_in_repo, "medium", count=2
+    )
+    assert len(questions) == 1  # quiz proceeds without the stubborn node
+    assert questions[0].node_id == "db.connect"
+
+
+def test_generate_questions_raises_when_every_node_fails(
+    graph_in_repo: nx.DiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def always_fails(node, graph, difficulty, count, config=None):
+        raise ValueError("no valid questions")
+
+    monkeypatch.setattr(generator, "get_questions_from_llm", always_fails)
+    with pytest.raises(ValueError):
+        generator.generate_questions(["payments.charge"], graph_in_repo, "medium", count=2)

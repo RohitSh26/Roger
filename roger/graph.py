@@ -62,13 +62,16 @@ def _normalize_node_attrs(graph: nx.DiGraph) -> None:
     Roger reads file/description and string communities. Missing attributes
     (e.g. returns) stay absent — templates skip questions they can't build.
     """
-    for _, attrs in graph.nodes(data=True):
+    for node_id, attrs in graph.nodes(data=True):
         if "file" not in attrs and "source_file" in attrs:
             attrs["file"] = attrs["source_file"]
         if "description" not in attrs and "label" in attrs:
             attrs["description"] = str(attrs["label"])
         if attrs.get("community") is not None:
             attrs["community"] = str(attrs["community"])
+        # Human-readable name for questions and prompts — developers should
+        # see make_broker_deps, never the underscore slug it hashes to.
+        attrs["display"] = str(attrs.get("label") or "").strip() or str(node_id)
 
 
 # Graphify edge relations that mean "A calls B". Other relations (contains,
@@ -88,6 +91,7 @@ def get_node(graph: nx.DiGraph, node_id: str) -> dict:
         raise KeyError(f"Node not in graph: {node_id}")
     attrs = dict(graph.nodes[node_id])
     attrs["id"] = node_id
+    attrs.setdefault("display", node_id)
     attrs["callers"] = sorted(
         u for u, _, d in graph.in_edges(node_id, data=True) if _is_call_edge(d)
     )
@@ -106,6 +110,53 @@ def get_god_nodes(graph: nx.DiGraph, top_n: int = 10) -> list[str]:
     """Return highest-degree node IDs. These are highest priority for quizzing."""
     ranked = sorted(graph.degree, key=lambda pair: (-pair[1], pair[0]))
     return [node_id for node_id, _degree in ranked[:top_n]]
+
+
+# Graphify emits bookkeeping nodes developers should never be quizzed on:
+# doc-derived rationale_N stubs and shell __entry markers.
+_JUNK_NODE_RE = re.compile(r"(?:rationale_\d+|__?entry)$")
+
+
+def _looks_like_test_file(file: str) -> bool:
+    name = file.rsplit("/", 1)[-1]
+    return (
+        any(segment in ("test", "tests") for segment in file.split("/"))
+        or name.startswith("test_")
+        or name.endswith("_test.py")
+    )
+
+
+def get_quizzable_nodes(graph: nx.DiGraph, exclude_tests: bool = True) -> list[str]:
+    """Node IDs worth quizzing a developer on.
+
+    Keeps nodes involved in at least one real call edge and drops graph
+    noise (rationale_N doc stubs, __entry markers). With exclude_tests,
+    prefers production code over test helpers — falling back to the full
+    set if the repo is nothing but tests.
+    """
+    in_calls: set[str] = set()
+    for src, dst, data in graph.edges(data=True):
+        if _is_call_edge(data):
+            in_calls.add(src)
+            in_calls.add(dst)
+
+    picked = []
+    for node_id, attrs in graph.nodes(data=True):
+        if node_id not in in_calls:
+            continue
+        label = str(attrs.get("label") or "")
+        if _JUNK_NODE_RE.search(str(node_id)) or _JUNK_NODE_RE.search(label):
+            continue
+        picked.append(node_id)
+
+    if exclude_tests:
+        non_test = [
+            n for n in picked
+            if not _looks_like_test_file(str(graph.nodes[n].get("file", "")))
+        ]
+        if non_test:
+            return sorted(non_test)
+    return sorted(picked)
 
 
 def get_community_nodes(graph: nx.DiGraph, community: str) -> list[str]:
@@ -142,24 +193,43 @@ def get_nodes_by_path(graph: nx.DiGraph, path: str) -> list[str]:
     return sorted(matches)
 
 
-def serialize_subgraph(subgraph: nx.DiGraph, max_chars: int | None = None) -> str:
-    """Serialize a subgraph to a compact text format for LLM prompt injection.
+def serialize_subgraph(
+    subgraph: nx.DiGraph, max_chars: int | None = None, labels: bool = False
+) -> str:
+    """Serialize a subgraph to a compact text format.
 
-    Output is deterministic (sorted nodes/edges) — it also feeds the cache
-    hash, so hashing must pass max_chars=None for full fidelity. Prompts pass
-    a budget: god nodes can have hundreds of neighbors, and an uncapped
+    labels=False (the cache-hash form) is deterministic and id-based —
+    hashing must pass max_chars=None for full fidelity. labels=True is the
+    prompt form: human-readable names and spelled-out relations, so the
+    model never sees underscore slugs to parrot back. Prompts also pass a
+    budget: god nodes can have hundreds of neighbors, and an uncapped
     serialization blows past the model's context window.
     """
     lines = []
-    for node_id in sorted(subgraph.nodes):
-        attrs = subgraph.nodes[node_id]
-        desc = attrs.get("description", "")
-        file = attrs.get("file", "")
-        community = attrs.get("community", "")
-        returns = attrs.get("returns", "")
-        lines.append(f"- {node_id} [file={file} community={community} returns={returns}] {desc}")
-    for src, dst in sorted(subgraph.edges):
-        lines.append(f"  {src} -> {dst}")
+    if labels:
+        for node_id in sorted(subgraph.nodes):
+            attrs = subgraph.nodes[node_id]
+            name = str(attrs.get("display") or node_id)
+            desc = str(attrs.get("description", ""))
+            suffix = f" — {desc}" if desc and desc != name else ""
+            lines.append(f"- {name} ({attrs.get('file', '')}){suffix}")
+        for src, dst, data in sorted(subgraph.edges(data=True), key=lambda e: (e[0], e[1])):
+            relation = str(data.get("relation") or "calls")
+            src_name = str(subgraph.nodes[src].get("display") or src)
+            dst_name = str(subgraph.nodes[dst].get("display") or dst)
+            lines.append(f"  {src_name} {relation} {dst_name}")
+    else:
+        for node_id in sorted(subgraph.nodes):
+            attrs = subgraph.nodes[node_id]
+            desc = attrs.get("description", "")
+            file = attrs.get("file", "")
+            community = attrs.get("community", "")
+            returns = attrs.get("returns", "")
+            lines.append(
+                f"- {node_id} [file={file} community={community} returns={returns}] {desc}"
+            )
+        for src, dst in sorted(subgraph.edges):
+            lines.append(f"  {src} -> {dst}")
 
     if max_chars is None:
         return "\n".join(lines)

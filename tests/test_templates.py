@@ -124,3 +124,22 @@ def test_module_question_skips_numeric_communities(graph: nx.DiGraph, rng: rando
     node = get_node(graph, "payments.charge")
     node["community"] = "229"
     assert templates.module_question(node, graph, rng=rng) is None
+
+
+def test_display_values_disambiguate_same_label(graph: nx.DiGraph) -> None:
+    graph.add_node("mod_a.save", display="save", file="src/mod_a/store.py")
+    graph.add_node("mod_b.save", display="save", file="src/mod_b/cache.py")
+    values = templates._display_values(graph, ["mod_a.save", "mod_b.save", "db.connect"])
+    assert values == ["save (store.py)", "save (cache.py)", "db.connect"]
+
+
+def test_questions_use_display_names(graph: nx.DiGraph, rng: random.Random) -> None:
+    # Give the target and its caller graphify-style labels; questions must
+    # show the labels, never the slug-like ids.
+    graph.nodes["payments.validate_card"]["display"] = "validate_card"
+    graph.nodes["payments.process_payment"]["display"] = "process_payment"
+    node = get_node(graph, "payments.validate_card")
+    question = templates.caller_question(node, graph, rng=rng)
+    assert question is not None
+    assert "validate_card()" in question.question
+    assert question.options[question.correct] == "process_payment"
