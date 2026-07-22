@@ -7,6 +7,7 @@ import time
 from typing import Optional
 
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 
 from roger.grader import grade_answer, has_passed, score_answers
@@ -70,9 +71,17 @@ def _read_key() -> str:
 def _show_question(
     console: Console, question: Question, index: int, total: int, node_label: str
 ) -> None:
-    body_lines = [question.question, ""]
+    # Question text, snippets, and options carry real code — escape so Rich
+    # never eats [brackets] as markup.
+    body_lines = [escape(question.question)]
+    if question.snippet:
+        body_lines.append("")
+        body_lines.extend(
+            f"[dim]  {escape(line)}[/dim]" for line in question.snippet.splitlines()
+        )
+    body_lines.append("")
     for key in VALID_KEYS:
-        body_lines.append(f"  [bold]{key}[/bold]) {question.options[key]}")
+        body_lines.append(f"  [bold]{key}[/bold]) {escape(question.options[key])}")
     console.print(
         Panel(
             "\n".join(body_lines),
@@ -89,10 +98,10 @@ def _show_feedback(console: Console, question: Question, is_correct: bool, score
     else:
         console.print(
             f"[bold red]✗ Incorrect[/bold red] — correct answer: "
-            f"[bold]{question.correct}[/bold]) {question.options[question.correct]}"
+            f"[bold]{question.correct}[/bold]) {escape(question.options[question.correct])}"
         )
     if question.explanation:
-        console.print(f"[dim]{question.explanation}[/dim]")
+        console.print(f"[dim]{escape(question.explanation)}[/dim]")
     console.print(f"[dim]Score so far: {score}/{asked}[/dim]\n")
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 import re
 from typing import Optional
 
@@ -35,6 +36,10 @@ what, file names, signatures). If a question needs such a fact, state the
 fact inside the question. Test only what a developer who once understood
 this code would still know a month later: purpose, behavior, design intent,
 and consequences.
+
+The developer answering will see the same SOURCE excerpt beside each
+question, so questions may refer to it directly ("this function", "the
+early return", "the loop at the end").
 
 QUESTION TYPES — write {count} questions, each a different type; skip any
 type this context cannot support:
@@ -85,6 +90,21 @@ RULES — every question must pass all five:
 DEFAULT_NUM_CTX = 8192
 MAX_LISTED_NEIGHBORS = 15
 MAX_SOURCE_CHARS = 4_000
+MAX_DISPLAY_SNIPPET_LINES = 24  # what the developer sees beside the question
+
+CLOZE_PROMPT = """\
+One line of real code has been removed from this excerpt of {file}:
+
+{blanked}
+
+The removed line is:
+{real_line}
+
+Write three alternative lines that would look plausible in that spot but are
+NOT what the code does — the kind of line a developer who only skimmed this
+code might believe. Match the style. Respond with JSON only, no other text:
+{{"alternatives": ["...", "...", "..."]}}
+"""
 
 
 def _subgraph_char_budget(num_ctx: int) -> int:
@@ -136,6 +156,7 @@ def build_prompt(
     difficulty: str,
     count: int,
     num_ctx: int = DEFAULT_NUM_CTX,
+    snippet: Optional[str] = None,
 ) -> str:
     """Fill the question-generation prompt with node + 1-hop subgraph context.
 
@@ -156,7 +177,8 @@ def build_prompt(
     # Real source makes the difference between comprehension questions and
     # structure trivia. It gets first claim on the context budget; the
     # serialized neighborhood absorbs whatever remains.
-    snippet = g.get_source_snippet(node)[:MAX_SOURCE_CHARS]
+    if snippet is None:
+        snippet = g.get_source_snippet(node)[:MAX_SOURCE_CHARS]
     source_block = (
         f"SOURCE (excerpt from {node.get('file', '')} {node.get('source_location', '')}):\n"
         f"{snippet}\n\n"
@@ -293,6 +315,94 @@ def parse_questions(
     return questions
 
 
+_CLOZE_SKIP_PREFIXES = (
+    "#", "//", "/*", "*", '"""', "'''",
+    "def ", "class ", "import ", "from ", "func ", "fn ", "function ",
+)
+
+
+def _pick_cloze_line(lines: list[str], rng: Optional[random.Random] = None) -> Optional[int]:
+    """Index of a line worth blanking: real logic, not signatures or comments."""
+    rng = rng or random.Random()
+    candidates = []
+    for index, line in enumerate(lines):
+        if index == 0:  # usually the definition line — blanking it names nothing
+            continue
+        stripped = line.strip()
+        if len(stripped) < 10 or stripped.startswith(_CLOZE_SKIP_PREFIXES):
+            continue
+        if "(" in stripped or "=" in stripped or stripped.startswith(("return", "raise", "yield")):
+            candidates.append(index)
+    return rng.choice(candidates) if candidates else None
+
+
+def build_cloze_question(
+    node: dict,
+    snippet: str,
+    difficulty: str,
+    config: Config,
+    rng: Optional[random.Random] = None,
+) -> Optional[Question]:
+    """Fill-in-the-blank over real source: correctness holds by construction.
+
+    We remove a real line, so the right answer is ground truth we control —
+    the model only invents the plausible-but-wrong alternatives. Returns
+    None when the snippet has no blankable line or the model can't produce
+    three distinct alternatives.
+    """
+    rng = rng or random.Random()
+    lines = snippet.splitlines()[:MAX_DISPLAY_SNIPPET_LINES]
+    index = _pick_cloze_line(lines, rng)
+    if index is None:
+        return None
+    real_line = lines[index]
+    indent = real_line[: len(real_line) - len(real_line.lstrip())]
+    blanked_lines = [*lines]
+    blanked_lines[index] = f"{indent}________________________________"
+    blanked = "\n".join(blanked_lines)
+
+    try:
+        raw = local.call_local(
+            CLOZE_PROMPT.format(file=node.get("file", ""), blanked=blanked, real_line=real_line),
+            model=config.model.local,
+            base_url=config.ollama.url,
+            num_ctx=config.ollama.num_ctx,
+        )
+    except ValueError:
+        return None
+
+    # Models answer either {"alternatives": [...]} or a bare JSON list.
+    alternatives = raw if isinstance(raw, list) else (
+        raw.get("alternatives") if isinstance(raw, dict) else None
+    )
+    if not isinstance(alternatives, list):
+        return None
+    real_norm = " ".join(real_line.split())
+    distractors: list[str] = []
+    for alt in alternatives:
+        text = " ".join(str(alt).split())
+        if text and text != real_norm and text not in distractors:
+            distractors.append(text)
+    if len(distractors) < 3:
+        return None
+
+    name = str(node.get("display") or node["id"])
+    values = [real_norm, *distractors[:3]]
+    rng.shuffle(values)
+    options = dict(zip(("A", "B", "C", "D"), values))
+    correct = next(k for k, v in options.items() if v == real_norm)
+    return Question(
+        node_id=node["id"],
+        question=f"One line in `{name}` is blanked out below. Which is the real line?",
+        options=options,
+        correct=correct,
+        explanation=f"That is the actual line in {node.get('file', 'the source')}.",
+        difficulty=difficulty,
+        tier=1,
+        snippet=blanked,
+    )
+
+
 def get_questions(
     node: dict,
     graph: nx.DiGraph,
@@ -315,9 +425,19 @@ def get_questions(
     if not local.is_ollama_running(config.ollama.url):
         raise OllamaNotRunningError(local.OLLAMA_NOT_RUNNING_MSG)
 
-    prompt = build_prompt(node, graph, difficulty, count, num_ctx=config.ollama.num_ctx)
-    # A 1B model at temperature 0.7 occasionally emits an unusable shape;
-    # a fresh sample usually fixes it, so retry before giving up.
+    snippet = g.get_source_snippet(node)[:MAX_SOURCE_CHARS]
+    display_snippet = "\n".join(snippet.splitlines()[:MAX_DISPLAY_SNIPPET_LINES])
+
+    # One construction-grounded cloze per node when the source supports it —
+    # its correct answer is the real line, immune to model hallucination.
+    cloze = build_cloze_question(node, snippet, difficulty, config) if snippet else None
+    llm_count = max(1, count - (1 if cloze else 0))
+
+    prompt = build_prompt(
+        node, graph, difficulty, llm_count, num_ctx=config.ollama.num_ctx, snippet=snippet
+    )
+    # A small model occasionally emits an unusable shape; a fresh sample
+    # usually fixes it, so retry before giving up.
     last_error: Exception = ValueError("no attempts made")
     for _ in range(3):
         try:
@@ -327,13 +447,22 @@ def get_questions(
                 base_url=config.ollama.url,
                 num_ctx=config.ollama.num_ctx,
             )
-            return parse_questions(
+            questions = parse_questions(
                 raw,
                 node_id=node["id"],
                 difficulty=difficulty,
                 tier=1,
                 subject=str(node.get("display") or node["id"]),
             )
+            for question in questions:
+                question.snippet = display_snippet
+            combined = questions + ([cloze] if cloze else [])
+            # Shuffle so downstream round-robin selection surfaces a mix of
+            # formats, not always the same kind from every node.
+            random.shuffle(combined)
+            return combined
         except ValueError as exc:
             last_error = exc
+    if cloze is not None:  # the LLM failed but the constructed question is solid
+        return [cloze]
     raise last_error

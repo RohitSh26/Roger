@@ -754,3 +754,102 @@ def test_build_prompt_includes_real_source_when_available(
     node_no_src = get_node(graph, "app_config")
     prompt2 = router.build_prompt(node_no_src, graph, "medium", 2)
     assert "SOURCE (excerpt" not in prompt2
+
+
+# --- cloze questions (construction-grounded) --------------------------------------
+
+
+SNIPPET = """\
+def prune_stale(session, run_id):
+    # remove candidates the generator no longer produces
+    stale = session.query(Candidate).filter(Candidate.run_id != run_id)
+    count = stale.count()
+    stale.delete(synchronize_session=False)
+    return count"""
+
+
+def test_pick_cloze_line_skips_signature_and_comments() -> None:
+    import random
+
+    lines = SNIPPET.splitlines()
+    for seed in range(10):
+        index = router._pick_cloze_line(lines, rng=random.Random(seed))
+        assert index is not None
+        assert index != 0                      # never the def line
+        assert not lines[index].strip().startswith("#")
+
+
+def test_build_cloze_question_truth_by_construction(monkeypatch: pytest.MonkeyPatch) -> None:
+    import random
+
+    monkeypatch.setattr(
+        local,
+        "call_local",
+        lambda *a, **k: {
+            "alternatives": [
+                "stale.update({Candidate.active: False})",
+                "session.expunge_all()",
+                "stale.delete(synchronize_session='fetch')",
+            ]
+        },
+    )
+    from roger.config import Config
+
+    node = {"id": "n1", "display": "prune_stale", "file": "app/prune.py"}
+    rng = random.Random(3)
+    question = router.build_cloze_question(node, SNIPPET, "medium", Config(), rng=rng)
+    assert question is not None
+    assert question.tier == 1
+    assert "________" in question.snippet
+    # The correct option is the real (removed) line — ground truth we control.
+    real_lines = {" ".join(line.split()) for line in SNIPPET.splitlines()}
+    assert question.options[question.correct] in real_lines
+    assert question.options[question.correct] not in question.snippet
+    assert len(set(question.options.values())) == 4
+
+
+def test_build_cloze_question_rejects_duplicate_alternatives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from roger.config import Config
+
+    monkeypatch.setattr(
+        local, "call_local", lambda *a, **k: {"alternatives": ["same", "same", "same"]}
+    )
+    node = {"id": "n1", "display": "prune_stale", "file": "app/prune.py"}
+    assert router.build_cloze_question(node, SNIPPET, "medium", Config()) is None
+
+
+def test_cached_questions_without_snippet_field_still_load(in_tmp_repo) -> None:
+    # Backward compat: cache entries written before Question.snippet existed.
+    import sqlite3
+
+    from roger import storage
+
+    storage.cache_questions("bc1", "n1", "medium", [make_question()], "roger-local")
+    with sqlite3.connect(storage.get_db_path("cache.db")) as conn:
+        row = conn.execute("SELECT questions_json FROM question_cache WHERE hash='bc1'").fetchone()
+        old_style = row[0].replace(', "snippet": ""', "")
+        conn.execute(
+            "UPDATE question_cache SET questions_json = ? WHERE hash = 'bc1'", (old_style,)
+        )
+        conn.commit()
+    cached = storage.get_cached_questions("bc1")
+    assert cached is not None
+    assert cached[0].snippet == ""
+
+
+def test_build_cloze_question_accepts_bare_list_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from roger.config import Config
+
+    monkeypatch.setattr(
+        local,
+        "call_local",
+        lambda *a, **k: ["stale.update({'active': False})", "session.rollback()", "return 0"],
+    )
+    node = {"id": "n1", "display": "prune_stale", "file": "app/prune.py"}
+    question = router.build_cloze_question(node, SNIPPET, "medium", Config())
+    assert question is not None
+    assert len(set(question.options.values())) == 4
