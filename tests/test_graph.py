@@ -203,3 +203,62 @@ def test_serialize_subgraph_respects_max_chars(graph: nx.DiGraph) -> None:
     assert "omitted" in capped
     # Uncapped output (the cache-hash input) must never carry the marker.
     assert "omitted" not in full
+
+
+def test_get_quizzable_nodes_filters_noise(tmp_path: Path) -> None:
+    import json
+
+    data = {
+        "directed": False,
+        "multigraph": False,
+        "graph": {},
+        "nodes": [
+            {"id": "app_worker", "label": "process_job", "source_file": "app/worker.py"},
+            {"id": "app_helper", "label": "retry", "source_file": "app/helper.py"},
+            {"id": "docs_rationale_7", "label": "rationale_7", "source_file": "docs/x.md"},
+            {"id": "run_sh__entry", "label": "entry", "source_file": "run.sh"},
+            {"id": "lonely", "label": "orphan", "source_file": "app/orphan.py"},
+            {"id": "tests_util", "label": "fake_broker", "source_file": "tests/util.py"},
+        ],
+        "links": [
+            {"source": "app_worker", "target": "app_helper", "relation": "calls"},
+            {"source": "app_worker", "target": "docs_rationale_7", "relation": "calls"},
+            {"source": "run_sh__entry", "target": "app_worker", "relation": "calls"},
+            {"source": "tests_util", "target": "app_worker", "relation": "calls"},
+            {"source": "app_helper", "target": "lonely", "relation": "references"},
+        ],
+    }
+    path = tmp_path / "graph.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    graph = g.load_graph(str(path))
+
+    # rationale/_entry stubs and call-less nodes are never quizzable;
+    # test helpers drop out when production code exists.
+    assert g.get_quizzable_nodes(graph) == ["app_helper", "app_worker"]
+    assert g.get_quizzable_nodes(graph, exclude_tests=False) == [
+        "app_helper", "app_worker", "tests_util",
+    ]
+
+
+def test_get_quizzable_nodes_falls_back_to_tests_only_repo(tmp_path: Path) -> None:
+    import json
+
+    data = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "t1", "label": "fake_a", "source_file": "tests/a.py"},
+            {"id": "t2", "label": "fake_b", "source_file": "tests/b.py"},
+        ],
+        "links": [{"source": "t1", "target": "t2", "relation": "calls"}],
+    }
+    path = tmp_path / "graph.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    graph = g.load_graph(str(path))
+    assert g.get_quizzable_nodes(graph) == ["t1", "t2"]  # better than nothing
+
+
+def test_serialize_subgraph_labels_mode_hides_slugs(real_schema_graph) -> None:
+    text = g.serialize_subgraph(real_schema_graph, labels=True)
+    assert "main.py calls helper" in text
+    assert "main.py contains config" in text
+    assert "app_main" not in text  # slugs never reach the prompt

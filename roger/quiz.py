@@ -15,6 +15,20 @@ from roger.models import Question, QuizAnswer, QuizResult
 VALID_KEYS = ("A", "B", "C", "D")
 
 
+def node_display_names(graph, questions: list[Question]) -> dict[str, str]:
+    """Readable 'name (file)' labels for the quiz header and summary."""
+    names: dict[str, str] = {}
+    for question in questions:
+        node_id = question.node_id
+        if node_id not in graph.nodes:
+            continue
+        attrs = graph.nodes[node_id]
+        name = str(attrs.get("display") or node_id)
+        file = str(attrs.get("file") or "")
+        names[node_id] = f"{name} ({file})" if file else name
+    return names
+
+
 def collect_keypress() -> str:
     """Capture single keypress A/B/C/D without requiring Enter.
 
@@ -53,14 +67,16 @@ def _read_key() -> str:
     return char
 
 
-def _show_question(console: Console, question: Question, index: int, total: int) -> None:
+def _show_question(
+    console: Console, question: Question, index: int, total: int, node_label: str
+) -> None:
     body_lines = [question.question, ""]
     for key in VALID_KEYS:
         body_lines.append(f"  [bold]{key}[/bold]) {question.options[key]}")
     console.print(
         Panel(
             "\n".join(body_lines),
-            title=f"Question {index} of {total} | {question.node_id}",
+            title=f"Question {index} of {total} | {node_label}",
             title_align="left",
             border_style="cyan",
         )
@@ -80,7 +96,9 @@ def _show_feedback(console: Console, question: Question, is_correct: bool, score
     console.print(f"[dim]Score so far: {score}/{asked}[/dim]\n")
 
 
-def _show_summary(console: Console, result: QuizResult) -> None:
+def _show_summary(
+    console: Console, result: QuizResult, node_names: dict[str, str]
+) -> None:
     lines = [
         f"Score: [bold]{result.score}/{result.total}[/bold]",
         f"Time: {result.duration_secs:.0f}s",
@@ -88,7 +106,10 @@ def _show_summary(console: Console, result: QuizResult) -> None:
     if result.weak_nodes:
         lines.append("")
         lines.append("Review these:")
-        lines.extend(f"  • {node_id}" for node_id in dict.fromkeys(result.weak_nodes))
+        lines.extend(
+            f"  • {node_names.get(node_id, node_id)}"
+            for node_id in dict.fromkeys(result.weak_nodes)
+        )
         lines.append("")
         lines.append("Run 'roger quiz --module <path>' to focus on weak areas")
     style = "green" if result.passed else "red"
@@ -102,14 +123,26 @@ def run_quiz(
     pass_threshold: int = 3,
     module_scope: Optional[str] = None,
     console: Optional[Console] = None,
+    node_names: Optional[dict[str, str]] = None,
 ) -> QuizResult:
-    """Display each question, collect answers, show feedback, return the result."""
+    """Display each question, collect answers, show feedback, return the result.
+
+    node_names maps node ids to human-readable labels for display; ids are
+    still what gets recorded to history.
+    """
     console = console or Console()
+    node_names = node_names or {}
     answers: list[QuizAnswer] = []
     quiz_start = time.monotonic()
 
     for index, question in enumerate(questions, start=1):
-        _show_question(console, question, index, len(questions))
+        _show_question(
+            console,
+            question,
+            index,
+            len(questions),
+            node_names.get(question.node_id, question.node_id),
+        )
         console.print("[dim]Answer (A/B/C/D):[/dim] ", end="")
 
         question_start = time.monotonic()
@@ -140,5 +173,5 @@ def run_quiz(
         module_scope=module_scope,
         duration_secs=time.monotonic() - quiz_start,
     )
-    _show_summary(console, result)
+    _show_summary(console, result, node_names)
     return result

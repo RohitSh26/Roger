@@ -113,3 +113,36 @@ def test_run_quiz_empty_question_list(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.total == 0
     assert result.score == 0
     assert result.passed  # nothing to fail
+
+
+def test_run_quiz_header_and_summary_use_display_names(monkeypatch: pytest.MonkeyPatch) -> None:
+    questions = [make_question(node_id="pkg_module_do_work_slug", text="Q1?", correct="A")]
+    pressed = iter(["B"])  # wrong on purpose so the weak list renders
+    monkeypatch.setattr(quiz_module, "collect_keypress", lambda: next(pressed))
+    buffer = io.StringIO()
+    console = Console(file=buffer, force_terminal=False, width=120)
+    run_quiz(
+        questions,
+        session_type="quiz",
+        pass_threshold=1,
+        console=console,
+        node_names={"pkg_module_do_work_slug": "do_work (src/module.py)"},
+    )
+    output = buffer.getvalue()
+    assert "do_work (src/module.py)" in output       # header + weak list
+    assert "pkg_module_do_work_slug" not in output   # slug never shown
+
+
+def test_node_display_names_builds_labels() -> None:
+    import networkx as nx
+
+    graph = nx.DiGraph()
+    graph.add_node("pkg_do_work", display="do_work", file="src/module.py")
+    graph.add_node("bare")
+    questions = [
+        make_question(node_id="pkg_do_work", text="Q1?"),
+        make_question(node_id="bare", text="Q2?"),
+        make_question(node_id="not_in_graph", text="Q3?"),
+    ]
+    names = quiz_module.node_display_names(graph, questions)
+    assert names == {"pkg_do_work": "do_work (src/module.py)", "bare": "bare"}

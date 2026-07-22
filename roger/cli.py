@@ -24,11 +24,11 @@ from roger.exceptions import (
     OllamaNotRunningError,
 )
 from roger.generator import generate_questions
-from roger.graph import get_god_nodes, load_graph
+from roger.graph import get_god_nodes, get_quizzable_nodes, load_graph
 from roger.hooks.pre_commit import install_hook, run_guard, uninstall_hook
 from roger.config import Config
 from roger.llm.local import DEFAULT_MODEL, MODELFILE_CONTENT
-from roger.quiz import run_quiz
+from roger.quiz import node_display_names, run_quiz
 from roger.storage import init_dbs, record_session
 
 app = typer.Typer(
@@ -168,15 +168,21 @@ def init() -> None:
 
 
 def _pick_quiz_nodes(graph, count: int, god_node_weight: bool) -> list[str]:
-    """Choose nodes for a whole-repo quiz: up to half god nodes, rest random."""
-    all_nodes = sorted(graph.nodes)
-    if len(all_nodes) <= count:
-        return all_nodes
+    """Choose nodes for a whole-repo quiz: up to half god nodes, rest random.
+
+    Only quiz-worthy nodes are considered — real code involved in call
+    edges, not doc stubs, entry markers, or (preferably) test helpers.
+    """
+    candidates = get_quizzable_nodes(graph) or sorted(graph.nodes)
+    if len(candidates) <= count:
+        return candidates
 
     picked: list[str] = []
     if god_node_weight:
-        picked.extend(get_god_nodes(graph, top_n=max(1, count // 2)))
-    remaining = [n for n in all_nodes if n not in set(picked)]
+        quizzable = set(candidates)
+        god = [n for n in get_god_nodes(graph, top_n=count * 4) if n in quizzable]
+        picked.extend(god[: max(1, count // 2)])
+    remaining = [n for n in candidates if n not in set(picked)]
     picked.extend(random.sample(remaining, min(count - len(picked), len(remaining))))
     return picked
 
@@ -217,7 +223,10 @@ def quiz() -> None:
         _fail("✗ Roger: could not generate any questions for this repo.")
 
     result = run_quiz(
-        questions, session_type="quiz", pass_threshold=config.quiz.pass_threshold
+        questions,
+        session_type="quiz",
+        pass_threshold=config.quiz.pass_threshold,
+        node_names=node_display_names(graph, questions),
     )
     try:
         record_session(result)
