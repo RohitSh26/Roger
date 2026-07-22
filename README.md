@@ -92,7 +92,7 @@ Skips are never punished — they're just recorded, so you can see your own patt
 
 ```toml
 [model]
-local = "roger-local"        # Ollama model name
+local = "roger-local"        # any locally pulled Ollama model (see below)
 
 [ollama]
 url = "http://localhost:11434"
@@ -112,6 +112,34 @@ block_on_fail = true            # false = warn but never block commits
 path = "graphify-out/graph.json"
 god_node_weight = true          # bias questions toward high-connectivity code
 ```
+
+## Using a different Ollama model
+
+Roger defaults to `roger-local` (MiniCPM5-1B) because it's small, fast, and tuned via
+its Modelfile to emit quiz JSON. But any model in your local Ollama works — pull it,
+then point the config at it:
+
+```bash
+ollama pull llama3.2:3b
+```
+
+```toml
+# .roger/config.toml
+[model]
+local = "llama3.2:3b"
+```
+
+That's it — `roger quiz` and `roger guard` now use that model. Notes:
+
+- **The model must already be pulled.** For a custom model, `roger init` verifies it
+  exists instead of creating it (so your model tag is never touched); if it's missing,
+  Roger tells you the exact `ollama pull` command.
+- **Config is per-repo**, so different repos can use different models.
+- **Clear the question cache after switching** — cached questions are keyed by code,
+  not by model, so old questions keep serving until you `rm .roger/cache.db`.
+- **Bigger models generally write better questions** (and slower ones). The model needs
+  to follow "respond with JSON only" instructions reliably; most instruct-tuned models
+  3B+ are fine. Still local-only: Roger never calls anything beyond `localhost:11434`.
 
 ## How it works
 

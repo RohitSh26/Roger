@@ -24,7 +24,10 @@ not running, raise a clear error with setup instructions.
 any other code parsing. Graphify (pip: `graphifyy`) handles all of that via its own
 Tree-sitter + NetworkX pipeline. Roger reads `graphify-out/graph.json`.
 
-**MiniCPM5-1B is the LLM.** Model: `hf.co/GnLOLot/MiniCPM5-1B-Claude-Opus-Fable5-Thinking-GGUF:Q8_0`.
+**MiniCPM5-1B is the default LLM.** Model: `hf.co/GnLOLot/MiniCPM5-1B-Claude-Opus-Fable5-Thinking-GGUF:Q8_0`.
+Users may point `[model].local` in `.roger/config.toml` at any locally pulled Ollama
+model; `roger init` then verifies it exists (never `ollama create` over a user's tag).
+This does not soften the no-cloud rule — Ollama on localhost is the only LLM backend.
 Registered via the Modelfile at `local/Modelfile` as `roger-local`. The Modelfile
 content is also embedded in `roger/llm/local.py` (MODELFILE_CONTENT, kept in sync by a
 test) because wheel installs don't ship `local/Modelfile`; `roger init` writes it to

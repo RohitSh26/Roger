@@ -486,3 +486,74 @@ def test_ensure_modelfile_prefers_checkout_copy(in_tmp_repo) -> None:
     checkout.write_text("FROM custom-model\n", encoding="utf-8")
     assert cli._ensure_modelfile() == checkout
     assert not (cli.ROGER_DIR / "Modelfile").exists()
+
+
+# --- custom model support ---------------------------------------------------------
+
+
+def test_call_local_404_custom_model_suggests_pull(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        local.requests, "post", lambda *a, **k: FakeResponse({}, status_code=404)
+    )
+    with pytest.raises(ModelNotRegisteredError) as excinfo:
+        local.call_local("prompt", model="llama3.2:3b")
+    assert "ollama pull llama3.2:3b" in str(excinfo.value)
+    # The default model keeps the roger init hint instead.
+    with pytest.raises(ModelNotRegisteredError) as excinfo:
+        local.call_local("prompt")
+    assert "roger init" in str(excinfo.value)
+
+
+class FakeProc:
+    def __init__(self, returncode: int):
+        self.returncode = returncode
+
+
+def test_ensure_model_verifies_custom_model_without_create(
+    in_tmp_repo, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from roger import cli
+    from roger.config import Config, ModelConfig
+
+    commands: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd)
+        return FakeProc(returncode=0)
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    cli._ensure_model(Config(model=ModelConfig(local="qwen2.5:7b")))
+
+    assert commands == [["ollama", "show", "qwen2.5:7b"]]  # verify only — never create
+
+
+def test_ensure_model_fails_when_custom_model_missing(
+    in_tmp_repo, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import typer
+
+    from roger import cli
+    from roger.config import Config, ModelConfig
+
+    monkeypatch.setattr(cli.subprocess, "run", lambda cmd, **kw: FakeProc(returncode=1))
+    with pytest.raises(typer.Exit):
+        cli._ensure_model(Config(model=ModelConfig(local="not-pulled:latest")))
+
+
+def test_ensure_model_registers_default_from_modelfile(
+    in_tmp_repo, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from roger import cli
+    from roger.config import Config
+
+    commands: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd)
+        return FakeProc(returncode=0)
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    cli._ensure_model(Config())
+
+    assert commands[0][:3] == ["ollama", "create", "roger-local"]
+    assert (cli.ROGER_DIR / "Modelfile").exists()

@@ -26,7 +26,8 @@ from roger.exceptions import (
 from roger.generator import generate_questions
 from roger.graph import get_god_nodes, load_graph
 from roger.hooks.pre_commit import install_hook, run_guard, uninstall_hook
-from roger.llm.local import MODELFILE_CONTENT
+from roger.config import Config
+from roger.llm.local import DEFAULT_MODEL, MODELFILE_CONTENT
 from roger.quiz import run_quiz
 from roger.storage import init_dbs, record_session
 
@@ -43,7 +44,9 @@ err_console = Console(stderr=True)
 
 
 def _fail(message: str) -> None:
-    err_console.print(str(message))
+    # markup=False: error text can contain literal [model]-style TOML section
+    # names, which Rich would otherwise swallow as markup tags.
+    err_console.print(str(message), markup=False)
     raise typer.Exit(code=1)
 
 
@@ -61,6 +64,38 @@ def _ensure_modelfile() -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(MODELFILE_CONTENT, encoding="utf-8")
     return target
+
+
+def _ensure_model(config: Config) -> None:
+    """Make the configured model usable.
+
+    Default model → register from the Modelfile. Custom model → only verify
+    it is already pulled: running `ollama create` here would re-point the
+    user's model tag at the MiniCPM base, silently destroying it.
+    """
+    if config.model.local == DEFAULT_MODEL:
+        modelfile = _ensure_modelfile()
+        console.print(
+            f"Registering model '{config.model.local}' (downloads ~1.15 GB on first run)…"
+        )
+        try:
+            subprocess.run(
+                ["ollama", "create", config.model.local, "-f", str(modelfile)], check=True
+            )
+        except subprocess.CalledProcessError as exc:
+            _fail(f"✗ Roger: ollama create failed: {exc}")
+        return
+
+    probe = subprocess.run(
+        ["ollama", "show", config.model.local], capture_output=True, text=True
+    )
+    if probe.returncode != 0:
+        _fail(
+            f"✗ Roger: custom model '{config.model.local}' is not in Ollama.\n"
+            f"  Pull it with: ollama pull {config.model.local}\n"
+            '  Or set local = "roger-local" under [model] in .roger/config.toml'
+        )
+    console.print(f"Using custom model '{config.model.local}' (already in Ollama).")
 
 
 @app.command()
@@ -107,15 +142,8 @@ def init() -> None:
             "  First-time setup: roger init"
         )
 
-    # 5. Register the model.
-    modelfile = _ensure_modelfile()
-    console.print(f"Registering model '{config.model.local}' (downloads ~1.15 GB on first run)…")
-    try:
-        subprocess.run(
-            ["ollama", "create", config.model.local, "-f", str(modelfile)], check=True
-        )
-    except subprocess.CalledProcessError as exc:
-        _fail(f"✗ Roger: ollama create failed: {exc}")
+    # 5. Register the default model, or verify a user-configured one.
+    _ensure_model(config)
 
     # 6-8. .roger/ directory, default config, databases.
     ROGER_DIR.mkdir(parents=True, exist_ok=True)
@@ -129,7 +157,8 @@ def init() -> None:
         f"✓ Graph built: {config.graph.path} "
         f"({graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges)"
     )
-    console.print(f"✓ Model ready: {config.model.local} (MiniCPM5-1B)")
+    model_note = " (MiniCPM5-1B)" if config.model.local == DEFAULT_MODEL else " (custom)"
+    console.print(f"✓ Model ready: {config.model.local}{model_note}")
     console.print(f"✓ Config: {CONFIG_PATH}")
     console.print()
     console.print("Next steps:")
