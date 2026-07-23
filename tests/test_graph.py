@@ -282,7 +282,77 @@ def test_get_source_snippet_reads_window(tmp_path: Path) -> None:
 def test_get_source_snippet_missing_file_or_location(tmp_path: Path) -> None:
     assert g.get_source_snippet({"file": "gone.py", "source_location": "L1"}, repo_root=tmp_path) == ""
     assert g.get_source_snippet({"source_location": "L1"}, repo_root=tmp_path) == ""
-    # No/garbled location falls back to the top of the file.
+    # No/garbled location falls back to the top of the file — and a cut
+    # this tight is honestly marked as truncated.
     src = tmp_path / "x.py"
     src.write_text("first\nsecond\n", encoding="utf-8")
-    assert g.get_source_snippet({"file": "x.py"}, max_lines=1, repo_root=tmp_path) == "first"
+    snippet = g.get_source_snippet({"file": "x.py"}, max_lines=1, repo_root=tmp_path)
+    assert snippet.splitlines()[0] == "first"
+    assert snippet.endswith(g.TRUNCATION_MARKER)
+
+
+PYTHON_SOURCE = '''\
+import os
+
+
+class Cache:
+    def get_or_compute(self, key, compute):
+        """Return the cached value, computing it once on miss."""
+        if key in self.store:
+            return self.store[key]
+        value = compute(key)
+        if value is not None:
+            self.store[key] = value
+        return value
+
+    def clear(self):
+        self.store = {}
+'''
+
+
+def test_snippet_extracts_complete_python_function(tmp_path: Path) -> None:
+    (tmp_path / "cache.py").write_text(PYTHON_SOURCE, encoding="utf-8")
+    attrs = {"file": "cache.py", "source_location": "L5"}  # def get_or_compute
+    snippet = g.get_source_snippet(attrs, repo_root=tmp_path)
+    assert snippet.startswith("def get_or_compute")
+    assert "return value" in snippet          # reaches the end of the function
+    assert "def clear" not in snippet          # stops before the next method
+    assert g.TRUNCATION_MARKER not in snippet  # complete block → no marker
+
+
+def test_snippet_extracts_complete_class_block(tmp_path: Path) -> None:
+    (tmp_path / "cache.py").write_text(PYTHON_SOURCE, encoding="utf-8")
+    attrs = {"file": "cache.py", "source_location": "L4"}  # class Cache
+    snippet = g.get_source_snippet(attrs, repo_root=tmp_path)
+    assert snippet.startswith("class Cache:")
+    assert "def clear" in snippet              # whole class, both methods
+
+
+def test_snippet_extracts_brace_delimited_block(tmp_path: Path) -> None:
+    js = "function ranked(hits) {\n  const best = {};\n  for (const h of hits) {\n    best[h.id] = h;\n  }\n  return best;\n}\n\nfunction other() {\n  return 1;\n}\n"
+    (tmp_path / "rank.js").write_text(js, encoding="utf-8")
+    snippet = g.get_source_snippet({"file": "rank.js", "source_location": "L1"}, repo_root=tmp_path)
+    assert snippet.startswith("function ranked")
+    assert snippet.rstrip().endswith("}")
+    assert "function other" not in snippet
+
+
+def test_snippet_marks_truncation_visibly(tmp_path: Path) -> None:
+    body = "def big():\n" + "\n".join(f"    x{i} = {i}" for i in range(200)) + "\nprint('after')\n"
+    (tmp_path / "big.py").write_text(body, encoding="utf-8")
+    snippet = g.get_source_snippet(
+        {"file": "big.py", "source_location": "L1"}, max_lines=20, repo_root=tmp_path
+    )
+    assert snippet.endswith(g.TRUNCATION_MARKER)
+    assert len(snippet.splitlines()) <= 21     # 20 code lines + marker
+
+
+def test_snippet_char_budget_cuts_on_line_boundary(tmp_path: Path) -> None:
+    body = "def wide():\n" + "\n".join("    y = " + "a" * 100 for _ in range(50))
+    (tmp_path / "wide.py").write_text(body, encoding="utf-8")
+    snippet = g.get_source_snippet(
+        {"file": "wide.py", "source_location": "L1"}, max_chars=500, repo_root=tmp_path
+    )
+    assert snippet.endswith(g.TRUNCATION_MARKER)
+    for line in snippet.splitlines()[:-1]:
+        assert line == "def wide():" or line.endswith("a")  # no mid-line cuts
