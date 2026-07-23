@@ -271,7 +271,10 @@ def test_get_source_snippet_reads_window(tmp_path: Path) -> None:
 
     attrs = {"file": "app/worker.py", "source_location": "L10"}
     snippet = g.get_source_snippet(attrs, max_lines=5, repo_root=tmp_path)
-    assert snippet.splitlines() == ["line 10", "line 11", "line 12", "line 13", "line 14"]
+    # Window of 5 from a 100-line file — cut, and honestly marked as such.
+    assert snippet.splitlines() == [
+        "line 10", "line 11", "line 12", "line 13", "line 14", g.TRUNCATION_MARKER,
+    ]
 
     ranged = g.get_source_snippet(
         {"file": "app/worker.py", "source_location": "L10-L12"}, repo_root=tmp_path
