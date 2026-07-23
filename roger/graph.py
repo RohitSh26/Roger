@@ -249,16 +249,61 @@ def serialize_subgraph(
 
 _LOCATION_RE = re.compile(r"L(\d+)(?:\s*[-–]\s*L?(\d+))?")
 
+TRUNCATION_MARKER = "# … (truncated — the code continues beyond this excerpt)"
+
+# Extensions where blocks are delimited by braces rather than indentation.
+_BRACE_EXTS = {
+    ".js", ".jsx", ".ts", ".tsx", ".go", ".java", ".c", ".h", ".cpp", ".cc",
+    ".cs", ".rs", ".php", ".kt", ".swift", ".scala", ".sh",
+}
+
+
+def _block_end_by_indent(lines: list[str], start_idx: int, max_lines: int) -> int:
+    """Last line index of an indentation-delimited block (Python-style)."""
+    def_line = lines[start_idx]
+    def_indent = len(def_line) - len(def_line.lstrip())
+    last_content = start_idx
+    index = start_idx + 1
+    while index < len(lines) and (index - start_idx) < max_lines:
+        stripped = lines[index].strip()
+        if stripped:
+            indent = len(lines[index]) - len(lines[index].lstrip())
+            if indent <= def_indent:
+                break
+            last_content = index
+        index += 1
+    return last_content
+
+
+def _block_end_by_braces(lines: list[str], start_idx: int, max_lines: int) -> int:
+    """Last line index of a brace-delimited block (JS/Go/Java/…-style)."""
+    depth = 0
+    opened = False
+    end = start_idx
+    for index in range(start_idx, min(len(lines), start_idx + max_lines)):
+        depth += lines[index].count("{") - lines[index].count("}")
+        if "{" in lines[index]:
+            opened = True
+        end = index
+        if opened and depth <= 0:
+            break
+    return end
+
 
 def get_source_snippet(
-    attrs: dict, max_lines: int = 48, repo_root: Path | None = None
+    attrs: dict,
+    max_lines: int = 80,
+    repo_root: Path | None = None,
+    max_chars: int = 4_000,
 ) -> str:
-    """Read the source text for a node from disk, if the file still exists.
+    """Read the complete code block for a node from disk, if it still exists.
 
-    Graphify records file + source_location (e.g. 'L42'); Roger reads a
-    window of real code so the LLM can ask comprehension questions instead
-    of structure trivia. This is not a parsing layer — just the text at the
-    location graphify already identified.
+    Graphify records file + a start location ('L42'); the block's end is
+    found by indentation (Python-style files) or brace counting (brace
+    languages) — text heuristics, not a parsing layer. A half-shown
+    function makes questions unanswerable, so when the block must be cut
+    (max_lines/max_chars), the excerpt ends with a visible TRUNCATION_MARKER
+    that both the model and the developer see.
     """
     file = str(attrs.get("file") or "")
     if not file:
@@ -266,15 +311,44 @@ def get_source_snippet(
     path = (repo_root or Path(".")) / file
     if not path.is_file():
         return ""
-    match = _LOCATION_RE.search(str(attrs.get("source_location") or ""))
-    start = int(match.group(1)) if match else 1
-    end = int(match.group(2)) if match and match.group(2) else start + max_lines - 1
-    end = min(end, start + max_lines - 1)
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return ""
-    return "\n".join(lines[start - 1 : end]).strip()
+
+    match = _LOCATION_RE.search(str(attrs.get("source_location") or ""))
+    start = int(match.group(1)) if match else 1
+    start_idx = max(0, min(start - 1, len(lines) - 1))
+
+    if match and match.group(2):  # explicit end recorded — trust it
+        end_idx = min(int(match.group(2)) - 1, start_idx + max_lines - 1)
+    elif Path(file).suffix.lower() in _BRACE_EXTS:
+        end_idx = _block_end_by_braces(lines, start_idx, max_lines)
+    else:
+        end_idx = _block_end_by_indent(lines, start_idx, max_lines)
+
+    block = lines[start_idx : end_idx + 1]
+    # Flat files (configs, file-level nodes) detect a 1-line "block" —
+    # fall back to a plain window, which is the right unit for them.
+    if len(block) < 3:
+        block = lines[start_idx : start_idx + max_lines]
+
+    block_end = start_idx + len(block) - 1
+    truncated = len(block) >= max_lines and block_end + 1 < len(lines)
+    kept: list[str] = []
+    used = 0
+    budget = max_chars - len(TRUNCATION_MARKER) - 1
+    for line in block:
+        if used + len(line) + 1 > budget:
+            truncated = True
+            break
+        kept.append(line)
+        used += len(line) + 1
+
+    snippet = "\n".join(kept).strip()
+    if snippet and truncated:
+        snippet += "\n" + TRUNCATION_MARKER
+    return snippet
 
 
 def get_god_node_ids_from_report(report_path: str = REPORT_PATH) -> list[str]:

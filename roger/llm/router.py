@@ -68,6 +68,8 @@ RULES — every question must pass all of these:
 - In scope: ask only about {name} and code visible in SOURCE. Never ask what
   a caller or callee does internally — neither you nor the developer can see
   its code here. Callers and callees may only appear as stated facts.
+- If SOURCE ends with a "truncated" marker, the code continues beyond what
+  is shown — ask only about the visible part.
 - Cover test: a developer who understands this code can answer before
   reading the options.
 - No giveaways: the question never contains or paraphrases its own answer,
@@ -95,8 +97,6 @@ RULES — every question must pass all of these:
 
 DEFAULT_NUM_CTX = 8192
 MAX_LISTED_NEIGHBORS = 15
-MAX_SOURCE_CHARS = 4_000
-MAX_DISPLAY_SNIPPET_LINES = 24  # what the developer sees beside the question
 
 CLOZE_PROMPT = """\
 One line of real code has been removed from this excerpt of {file}:
@@ -184,7 +184,7 @@ def build_prompt(
     # structure trivia. It gets first claim on the context budget; the
     # serialized neighborhood absorbs whatever remains.
     if snippet is None:
-        snippet = g.get_source_snippet(node)[:MAX_SOURCE_CHARS]
+        snippet = g.get_source_snippet(node)
     source_block = (
         f"SOURCE (excerpt from {node.get('file', '')} {node.get('source_location', '')}):\n"
         f"{snippet}\n\n"
@@ -394,7 +394,7 @@ def build_cloze_question(
     three distinct alternatives.
     """
     rng = rng or random.Random()
-    lines = snippet.splitlines()[:MAX_DISPLAY_SNIPPET_LINES]
+    lines = snippet.splitlines()
     index = _pick_cloze_line(lines, rng)
     if index is None:
         return None
@@ -491,7 +491,7 @@ def build_mutant_question(
     alteration ourselves.
     """
     rng = rng or random.Random()
-    lines = snippet.splitlines()[:MAX_DISPLAY_SNIPPET_LINES]
+    lines = snippet.splitlines()
 
     mutable = []
     for index, line in enumerate(lines):
@@ -564,8 +564,10 @@ def get_questions(
     if not local.is_ollama_running(config.ollama.url):
         raise OllamaNotRunningError(local.OLLAMA_NOT_RUNNING_MSG)
 
-    snippet = g.get_source_snippet(node)[:MAX_SOURCE_CHARS]
-    display_snippet = "\n".join(snippet.splitlines()[:MAX_DISPLAY_SNIPPET_LINES])
+    # The developer sees exactly what the model sees — a complete block
+    # (get_source_snippet ends it with a visible marker if it had to cut).
+    snippet = g.get_source_snippet(node)
+    display_snippet = snippet
 
     # Construction-grounded questions when the source supports them — their
     # correct answers are real lines we removed or altered ourselves,
