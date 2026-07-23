@@ -61,10 +61,13 @@ type this context cannot support:
 DIFFICULTY: {difficulty} — medium prefers types 1, 2, 4 and 6; hard prefers
 types 3, 5 and 6 with design trade-offs.
 
-RULES — every question must pass all five:
+RULES — every question must pass all of these:
 - Grounded: the correct answer is provable from the SOURCE and CODE CONTEXT
   above. Never invent runtime behavior, error messages, or values that are
   not shown.
+- In scope: ask only about {name} and code visible in SOURCE. Never ask what
+  a caller or callee does internally — neither you nor the developer can see
+  its code here. Callers and callees may only appear as stated facts.
 - Cover test: a developer who understands this code can answer before
   reading the options.
 - No giveaways: the question never contains or paraphrases its own answer,
@@ -246,6 +249,40 @@ _META_MARKER_RE = re.compile(
     r"(?i)(\boptions?\s*:|\bcorrect\s*:|\banswer\s+is\b|\bright\s+answer\b|\bwrong\s+option)"
 )
 
+# Code identifiers a question refers to: `backticked` names and call-style
+# tokens like _run_case().
+_CODE_REF_RE = re.compile(r"`([^`]+)`|\b([A-Za-z_][\w.]*)\s*\(\)")
+
+
+def _referenced_code_names(question_text: str) -> set[str]:
+    names = set()
+    for backticked, called in _CODE_REF_RE.findall(question_text):
+        raw = (backticked or called).strip().strip("`")
+        raw = raw.removesuffix("()").strip()
+        if raw:
+            names.add(raw.split(".")[-1].strip("_() "))
+    return {n for n in names if n}
+
+
+def _is_out_of_scope(question_text: str, subject: Optional[str], snippet: str) -> bool:
+    """True if the question asks about code the developer cannot see.
+
+    The model knows callers/callees by name only; a question about what one
+    of them does internally is unanswerable from the shown snippet — the
+    exact 'asks about _run_case() while showing FakeSearchClient' failure.
+    """
+    if not snippet:
+        return False
+    subject_base = ""
+    if subject:
+        subject_base = subject.strip().removesuffix("()").split(".")[-1].strip("_() ")
+    for name in _referenced_code_names(question_text):
+        if subject_base and (name in subject_base or subject_base in name):
+            continue
+        if name not in snippet:
+            return True
+    return False
+
 
 def _is_giveaway(question_text: str, options: dict[str, str], correct: str, subject: Optional[str]) -> bool:
     """True for self-answering questions a non-reader could guess.
@@ -284,6 +321,7 @@ def parse_questions(
     difficulty: str,
     tier: int,
     subject: Optional[str] = None,
+    snippet: str = "",
 ) -> list[Question]:
     """Validate the model's JSON and build Question objects, skipping malformed items."""
     items = raw.get("questions")
@@ -301,6 +339,8 @@ def parse_questions(
         if correct is None:
             continue
         if _is_giveaway(str(item["question"]), options, correct, subject):
+            continue
+        if _is_out_of_scope(str(item["question"]), subject, snippet):
             continue
         questions.append(
             Question(
@@ -555,6 +595,7 @@ def get_questions(
                 difficulty=difficulty,
                 tier=1,
                 subject=str(node.get("display") or node["id"]),
+                snippet=snippet,
             )
             for question in questions:
                 question.snippet = display_snippet

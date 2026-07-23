@@ -901,3 +901,72 @@ def test_build_mutant_question_unmutable_snippet_returns_none() -> None:
     node = {"id": "n1", "display": "x", "file": "a.py"}
     snippet = "def x():\n    pass\n    return None"
     assert router.build_mutant_question(node, snippet, "hard") is None
+
+
+# --- scope validation: no questions about unseen code -----------------------------
+
+
+FAKE_CLIENT_SNIPPET = """\
+class FakeSearchClient:
+    def seed(self, keyword, hits):
+        self.hits_by_keyword[normalize_query(keyword)] = hits
+
+    async def search(self, query, *, build_seq, top):
+        ranked = sorted(best.values(), key=lambda hit: -hit.score)
+        return ranked[:top]"""
+
+
+def test_out_of_scope_rejects_question_about_unseen_caller() -> None:
+    # The exact field failure: snippet shows FakeSearchClient, question asks
+    # about _run_case(), which appears nowhere in the shown code.
+    assert router._is_out_of_scope(
+        "What is the immediate return value of _run_case()?",
+        subject="FakeSearchClient",
+        snippet=FAKE_CLIENT_SNIPPET,
+    )
+
+
+def test_out_of_scope_allows_subject_and_visible_names() -> None:
+    assert not router._is_out_of_scope(
+        "What does FakeSearchClient.search() return when no keyword matches?",
+        subject="FakeSearchClient",
+        snippet=FAKE_CLIENT_SNIPPET,
+    )
+    assert not router._is_out_of_scope(
+        "Why does `seed` route keywords through `normalize_query`?",
+        subject="FakeSearchClient",
+        snippet=FAKE_CLIENT_SNIPPET,
+    )
+    # Prose-only questions reference no identifiers — always in scope.
+    assert not router._is_out_of_scope(
+        "What is the primary purpose of this class?",
+        subject="FakeSearchClient",
+        snippet=FAKE_CLIENT_SNIPPET,
+    )
+    # Without a snippet there is nothing to check against.
+    assert not router._is_out_of_scope(
+        "What does _run_case() return?", subject="FakeSearchClient", snippet=""
+    )
+
+
+def test_parse_questions_drops_out_of_scope_items() -> None:
+    raw = {
+        "questions": [
+            {
+                "question": "What is the immediate return value of _run_case()?",
+                "options": {"A": "FakeSearchClient", "B": "None", "C": "Error", "D": "Clean"},
+                "correct": "B",
+            },
+            {
+                "question": "What does search() return when no keyword matches the query?",
+                "options": {"A": "an empty list", "B": "None", "C": "all hits", "D": "an exception"},
+                "correct": "A",
+            },
+        ]
+    }
+    questions = router.parse_questions(
+        raw, node_id="n1", difficulty="medium", tier=1,
+        subject="FakeSearchClient", snippet=FAKE_CLIENT_SNIPPET,
+    )
+    assert len(questions) == 1
+    assert "search()" in questions[0].question
