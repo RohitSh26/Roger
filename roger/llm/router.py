@@ -13,6 +13,7 @@ from roger.config import Config
 from roger.exceptions import OllamaNotRunningError
 from roger.llm import local
 from roger.models import Question
+from roger.quiz import language_for_file
 from roger.templates import OPTION_KEYS, build_from_graph
 
 DIFFICULTIES = ("simple", "medium", "hard")
@@ -80,6 +81,15 @@ RULES — every question must pass all of these:
   grammatical form and similar length. Never use "all/none of the above".
 - Developer voice: plain code-review language. Never say "node", "graph",
   "community", "neighboring", or refer to this prompt.
+
+TONE — this is a learning tool, not an interview:
+- Every question must be answerable by reasoning from the code shown, never
+  by recalling details that are not visible. Nobody memorizes code.
+- Prefer elaborated, contextual framing that teaches while it asks: "In this
+  class, source references are validated before linking — why does that
+  happen here rather than in the caller?" — not terse trivia.
+- Explanations must teach: say what the code does and why the correct answer
+  holds, so a developer learns something even when they answer right.
 
 {example_block}Respond with JSON only, no other text:
 {{
@@ -436,7 +446,10 @@ def build_cloze_question(
     correct = next(k for k, v in options.items() if v == real_norm)
     return Question(
         node_id=node["id"],
-        question=f"One line in `{name}` is blanked out below. Which is the real line?",
+        question=(
+            f"One line of `{name}` is blanked out below. Based on how the "
+            f"surrounding code works, which line belongs in the blank?"
+        ),
         options=options,
         correct=correct,
         explanation=f"That is the actual line in {node.get('file', 'the source')}.",
@@ -447,33 +460,36 @@ def build_cloze_question(
 
 
 # Textual mutations for spot-the-alteration questions. Plain substring pairs
-# applied once — no AST, language-agnostic, plausible by design.
-_MUTATION_RULES: tuple[tuple[str, str], ...] = (
-    (" == ", " != "),
-    (" != ", " == "),
-    (" >= ", " <= "),
-    (" <= ", " >= "),
-    (" and ", " or "),
-    (" or ", " and "),
-    ("&&", "||"),
-    ("||", "&&"),
-    ("max(", "min("),
-    ("min(", "max("),
-    ("True", "False"),
-    ("False", "True"),
-    (" += ", " -= "),
-    (" -= ", " += "),
-    (" + ", " - "),
-    (" - ", " + "),
+# applied once — no AST, language-agnostic — each with a behavioral hint so
+# the question teaches what KIND of change to reason about instead of
+# demanding recall of the exact statement.
+_MUTATION_RULES: tuple[tuple[str, str, str], ...] = (
+    (" == ", " != ", "inverts a comparison"),
+    (" != ", " == ", "inverts a comparison"),
+    (" >= ", " <= ", "flips a boundary check"),
+    (" <= ", " >= ", "flips a boundary check"),
+    (" and ", " or ", "changes how conditions combine"),
+    (" or ", " and ", "changes how conditions combine"),
+    ("&&", "||", "changes how conditions combine"),
+    ("||", "&&", "changes how conditions combine"),
+    ("max(", "min(", "picks the opposite extreme"),
+    ("min(", "max(", "picks the opposite extreme"),
+    ("True", "False", "flips a boolean"),
+    ("False", "True", "flips a boolean"),
+    (" += ", " -= ", "reverses an accumulation"),
+    (" -= ", " += ", "reverses an accumulation"),
+    (" + ", " - ", "changes arithmetic"),
+    (" - ", " + ", "changes arithmetic"),
 )
 
 
-def _mutate_line(line: str, rng: random.Random) -> Optional[str]:
+def _mutate_line(line: str, rng: random.Random) -> Optional[tuple[str, str]]:
+    """Return (mutated_line, behavioral_hint), or None if nothing applies."""
     rules = list(_MUTATION_RULES)
     rng.shuffle(rules)
-    for old, new in rules:
+    for old, new, hint in rules:
         if old in line:
-            return line.replace(old, new, 1)
+            return line.replace(old, new, 1), hint
     return None
 
 
@@ -498,18 +514,21 @@ def build_mutant_question(
         stripped = line.strip()
         if len(stripped) < 10 or stripped.startswith(_CLOZE_SKIP_PREFIXES):
             continue
-        mutated = _mutate_line(line, rng)
-        if mutated is not None and mutated != line:
-            mutable.append((index, mutated))
+        mutation = _mutate_line(line, rng)
+        if mutation is not None and mutation[0] != line:
+            mutable.append((index, *mutation))
     if not mutable:
         return None
-    index, mutated_line = rng.choice(mutable)
+    index, mutated_line, hint = rng.choice(mutable)
 
     shown = [*lines]
     shown[index] = mutated_line
-    correct_norm = " ".join(mutated_line.split())
+    # Options carry their line number (matching the numbered gutter the
+    # developer sees), so finding a candidate line is a scan, not a hunt.
+    correct_value = f"L{index + 1}: " + " ".join(mutated_line.split())
 
     distractor_pool = []
+    seen_norms = {" ".join(mutated_line.split())}
     for j, line in enumerate(shown):
         if j == index:
             continue
@@ -517,25 +536,29 @@ def build_mutant_question(
         if len(stripped) < 10 or stripped.startswith(_CLOZE_SKIP_PREFIXES):
             continue
         norm = " ".join(stripped.split())
-        if norm != correct_norm and norm not in distractor_pool:
-            distractor_pool.append(norm)
+        if norm not in seen_norms:
+            seen_norms.add(norm)
+            distractor_pool.append(f"L{j + 1}: {norm}")
     if len(distractor_pool) < 3:
         return None
 
     name = str(node.get("display") or node["id"])
-    values = [correct_norm, *rng.sample(distractor_pool, 3)]
+    values = [correct_value, *rng.sample(distractor_pool, 3)]
     rng.shuffle(values)
     options = dict(zip(("A", "B", "C", "D"), values))
-    correct = next(k for k, v in options.items() if v == correct_norm)
+    correct = next(k for k, v in options.items() if v == correct_value)
     return Question(
         node_id=node["id"],
         question=(
-            f"One line in the code below was altered from the real implementation "
-            f"of `{name}`. Which shown line is NOT what the real code does?"
+            f"This excerpt of `{name}` differs from the real implementation on one "
+            f"line: the change {hint}, which would alter the behavior. Reasoning "
+            f"from how this code should work, which line is the wrong one?"
         ),
         options=options,
         correct=correct,
-        explanation=f"The real code reads: {lines[index].strip()}",
+        explanation=(
+            f"Line {index + 1} {hint} — the real code reads: {lines[index].strip()}"
+        ),
         difficulty=difficulty,
         tier=0,  # constructed, no LLM involved
         snippet="\n".join(shown),
@@ -571,9 +594,14 @@ def get_questions(
 
     # Construction-grounded questions when the source supports them — their
     # correct answers are real lines we removed or altered ourselves,
-    # immune to model hallucination.
+    # immune to model hallucination. Spot-the-alteration is hard-mode only:
+    # at medium it reads as an interview gotcha, not a learning prompt.
     cloze = build_cloze_question(node, snippet, difficulty, config) if snippet else None
-    mutant = build_mutant_question(node, snippet, difficulty) if snippet else None
+    mutant = (
+        build_mutant_question(node, snippet, difficulty)
+        if snippet and difficulty == "hard"
+        else None
+    )
     constructed = [q for q in (cloze, mutant) if q is not None]
     llm_count = max(1, count - len(constructed))
 
@@ -602,6 +630,10 @@ def get_questions(
             for question in questions:
                 question.snippet = display_snippet
             combined = questions + constructed
+            language = language_for_file(str(node.get("file") or ""))
+            for question in combined:
+                if question.snippet:
+                    question.language = language
             # Shuffle so downstream round-robin selection surfaces a mix of
             # formats, not always the same kind from every node.
             random.shuffle(combined)
@@ -609,5 +641,8 @@ def get_questions(
         except ValueError as exc:
             last_error = exc
     if constructed:  # the LLM failed but the constructed questions are solid
+        language = language_for_file(str(node.get("file") or ""))
+        for question in constructed:
+            question.language = language
         return constructed
     raise last_error

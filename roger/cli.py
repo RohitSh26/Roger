@@ -10,6 +10,7 @@ import importlib.util
 import random
 import shutil
 import subprocess
+import webbrowser
 from pathlib import Path
 
 import requests
@@ -30,6 +31,7 @@ from roger.config import Config
 from roger.llm.local import DEFAULT_MODEL, MODELFILE_CONTENT
 from roger.quiz import node_display_names, run_quiz
 from roger.storage import init_dbs, record_session
+from roger.webquiz import record_answer_code, render_quiz_html
 
 app = typer.Typer(
     name="roger",
@@ -188,7 +190,11 @@ def _pick_quiz_nodes(graph, count: int, god_node_weight: bool) -> list[str]:
 
 
 @app.command()
-def quiz() -> None:
+def quiz(
+    web: bool = typer.Option(
+        False, "--web", help="Take the quiz in the browser (highlighted code, no server)."
+    ),
+) -> None:
     """Quiz yourself on this repo (whole repo, config defaults)."""
     config = load_config()
     try:
@@ -222,16 +228,45 @@ def quiz() -> None:
     if not questions:
         _fail("✗ Roger: could not generate any questions for this repo.")
 
+    names = node_display_names(graph, questions)
+    if web:
+        page = render_quiz_html(
+            questions,
+            session_type="quiz",
+            pass_threshold=config.quiz.pass_threshold,
+            node_names=names,
+        )
+        console.print(f"✓ Quiz ready: {page}")
+        console.print("  Answer in the browser, then run the 'roger record' command it shows.")
+        webbrowser.open(page.resolve().as_uri())
+        return
+
     result = run_quiz(
         questions,
         session_type="quiz",
         pass_threshold=config.quiz.pass_threshold,
-        node_names=node_display_names(graph, questions),
+        node_names=names,
     )
     try:
         record_session(result)
     except CacheError as exc:
         err_console.print(f"⚠ Roger: quiz finished but history was not saved: {exc}")
+
+
+@app.command()
+def record(code: str) -> None:
+    """Record a finished web quiz session (the page shows the answer code)."""
+    try:
+        result = record_answer_code(code)
+    except ValueError as exc:
+        _fail(f"✗ Roger: {exc}")
+        return
+    try:
+        record_session(result)
+    except CacheError as exc:
+        _fail(f"✗ Roger: session graded but history was not saved: {exc}")
+    verdict = "passed" if result.passed else "failed"
+    console.print(f"✓ Recorded: {result.score}/{result.total} — {verdict}.")
 
 
 @guard_app.callback()

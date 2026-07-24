@@ -343,7 +343,7 @@ def test_build_prompt_caps_huge_neighborhoods(graph: nx.DiGraph) -> None:
     assert len(node["callers"]) > 400
     prompt = router.build_prompt(node, graph, "medium", 5)
     budget = router._subgraph_char_budget(router.DEFAULT_NUM_CTX)
-    assert len(prompt) < budget + 4_000  # subgraph budget + template overhead
+    assert len(prompt) < budget + 5_000  # subgraph budget + template overhead
     assert "omitted" in prompt
     assert "more)" in prompt  # capped caller list
 
@@ -862,10 +862,12 @@ def test_mutate_line_flips_operators() -> None:
     import random
 
     rng = random.Random(1)
-    assert router._mutate_line("    if a == b and c:", rng) in {
-        "    if a != b and c:", "    if a == b or c:",
-    }
-    assert router._mutate_line("    total = max(x, y)", rng) == "    total = min(x, y)"
+    mutated, hint = router._mutate_line("    if a == b and c:", rng)
+    assert mutated in {"    if a != b and c:", "    if a == b or c:"}
+    assert hint in {"inverts a comparison", "changes how conditions combine"}
+    mutated, hint = router._mutate_line("    total = max(x, y)", rng)
+    assert mutated == "    total = min(x, y)"
+    assert hint == "picks the opposite extreme"
     assert router._mutate_line("    pass", rng) is None
 
 
@@ -883,18 +885,25 @@ def test_build_mutant_question_no_llm_and_truth_by_construction(
     question = router.build_mutant_question(node, SNIPPET, "hard", rng=random.Random(5))
     assert question is not None
     assert question.tier == 0
-    # The correct option is the altered line, visible in the shown snippet...
-    shown_norms = {" ".join(line.split()) for line in question.snippet.splitlines()}
-    assert question.options[question.correct] in shown_norms
+
+    def split_option(value: str) -> tuple[int, str]:
+        prefix, text = value.split(": ", 1)
+        return int(prefix.lstrip("L")), text
+
+    # The correct option is the altered line, visible at its stated line number...
+    shown_lines = question.snippet.splitlines()
+    lineno, text = split_option(question.options[question.correct])
+    assert " ".join(shown_lines[lineno - 1].split()) == text
     # ...and it is NOT a line of the real source.
     real_norms = {" ".join(line.split()) for line in SNIPPET.splitlines()}
-    assert question.options[question.correct] not in real_norms
-    # Distractors are genuine real lines.
+    assert text not in real_norms
+    # Distractors are genuine real lines at their real positions.
     for key, value in question.options.items():
         if key != question.correct:
-            assert value in real_norms
-    # The explanation reveals the real line.
-    assert question.explanation.startswith("The real code reads:")
+            _, distractor_text = split_option(value)
+            assert distractor_text in real_norms
+    # The explanation reveals the real line and where it was.
+    assert question.explanation.startswith("Line ")
 
 
 def test_build_mutant_question_unmutable_snippet_returns_none() -> None:
@@ -998,4 +1007,57 @@ def test_cloze_and_mutant_work_on_other_languages(
     mutant = router.build_mutant_question(node, source, "hard", rng=random.Random(2))
     assert mutant is not None
     real_norms = {" ".join(line.split()) for line in source.splitlines()}
-    assert mutant.options[mutant.correct] not in real_norms  # the altered line
+    altered_text = mutant.options[mutant.correct].split(": ", 1)[1]
+    assert altered_text not in real_norms  # the altered line, minus its L<n> prefix
+
+
+def test_mutant_question_carries_behavioral_context() -> None:
+    import random
+
+    node = {"id": "n1", "display": "prune_stale", "file": "app/prune.py"}
+    question = router.build_mutant_question(node, SNIPPET, "hard", rng=random.Random(5))
+    assert question is not None
+    # The question names the KIND of change, so it is reasoned, not recalled.
+    assert any(
+        hint in question.question
+        for _, _, hint in router._MUTATION_RULES
+    )
+    assert "Reasoning from how this code should work" in question.question
+
+
+def test_mutant_is_hard_mode_only(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.test_graph import REAL_SCHEMA_DATA
+
+    graph_json = tmp_path / "graph.json"
+    graph_json.write_text(json.dumps(REAL_SCHEMA_DATA), encoding="utf-8")
+    src = tmp_path / "app" / "main.py"
+    src.parent.mkdir()
+    src.write_text(
+        "def main(x):\n    if x == 0 and ready():\n        return retry_count + 1\n"
+        "    total = max(x, limit)\n    return helper(total)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    graph = load_graph(str(graph_json))
+    node = get_node(graph, "app_main")
+
+    # Prose-only question so the scope validator (rightly) lets it through.
+    scoped_raw = {
+        "questions": [
+            {
+                "question": "What is the purpose of this code?",
+                "options": {"A": "a", "B": "b", "C": "c", "D": "d"},
+                "correct": "B",
+                "explanation": "e",
+            }
+        ]
+    }
+    monkeypatch.setattr(local, "is_ollama_running", lambda *a, **k: True)
+    monkeypatch.setattr(local, "call_local", lambda *a, **k: scoped_raw)
+
+    medium = router.get_questions(node, graph, "medium", 3)
+    assert not any("differs from the real implementation" in q.question for q in medium)
+    hard = router.get_questions(node, graph, "hard", 3)
+    assert any("differs from the real implementation" in q.question for q in hard)

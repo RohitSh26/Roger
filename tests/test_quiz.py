@@ -161,3 +161,64 @@ def test_run_quiz_renders_snippet_and_escapes_markup(monkeypatch: pytest.MonkeyP
     assert "items[0] == sentinel" in output   # snippet shown, brackets survive
     assert "________________" in output
     assert "return [x] or None" in output     # option markup not eaten by Rich
+
+
+# --- web quiz ------------------------------------------------------------------
+
+
+def test_language_for_file() -> None:
+    assert quiz_module.language_for_file("src/app/main.py") == "python"
+    assert quiz_module.language_for_file("pkg/broker.go") == "go"
+    assert quiz_module.language_for_file("src/Cart.tsx") == "typescript"
+    assert quiz_module.language_for_file("Makefile") == "text"
+
+
+def test_render_quiz_html_and_record_roundtrip(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from roger import webquiz
+
+    monkeypatch.chdir(tmp_path)
+    questions = [
+        make_question(node_id="n1", text="Q1?", correct="B"),
+        make_question(node_id="n2", text="Q2 with </script> inside?", correct="A"),
+    ]
+    questions[0].snippet = "def f():\n    return [1] < [2]"
+    questions[0].language = "python"
+
+    page = webquiz.render_quiz_html(
+        questions, session_type="quiz", pass_threshold=1,
+        node_names={"n1": "f (src/f.py)"},
+    )
+    html = page.read_text(encoding="utf-8")
+    assert "quiz-data" in html and "language-python" not in html  # set client-side
+    assert "<\\/script>" in html          # snippet cannot break the embed tag
+    assert "f (src/f.py)" in html
+    assert webquiz.PENDING_PATH.is_file()
+
+    # Round-trip: answers B (right), B (wrong) → 1/2, threshold 1 → passed.
+    result = webquiz.record_answer_code("BB")
+    assert (result.score, result.total, result.passed) == (1, 2, True)
+    assert [a.is_correct for a in result.answers] == [True, False]
+    assert not webquiz.PENDING_PATH.is_file()  # consumed
+
+
+def test_record_rejects_bad_codes(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from roger import webquiz
+
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(ValueError):
+        webquiz.record_answer_code("AB")  # no pending session at all
+
+    webquiz.render_quiz_html(
+        [make_question(text="Q?")], session_type="quiz", pass_threshold=1
+    )
+    with pytest.raises(ValueError):
+        webquiz.record_answer_code("ABX")  # wrong length / invalid letter
+
+
+def test_quiz_template_file_matches_embedded_copy() -> None:
+    from pathlib import Path
+
+    from roger.webquiz import EMBEDDED_TEMPLATE
+
+    template = Path(__file__).resolve().parent.parent / "templates" / "quiz.html.jinja"
+    assert template.read_text(encoding="utf-8") == EMBEDDED_TEMPLATE
