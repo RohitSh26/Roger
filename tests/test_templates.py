@@ -143,3 +143,123 @@ def test_questions_use_display_names(graph: nx.DiGraph, rng: random.Random) -> N
     assert question is not None
     assert "validate_card()" in question.question
     assert question.options[question.correct] == "process_payment"
+
+
+# --- doc questions (constructed, zero LLM) ------------------------------------------
+
+
+ADR_TEXT = """\
+# {n}. {title}
+
+## Context
+
+{context} This paragraph gives enough context body to pass the length
+threshold used by the section splitter and the ADR parser alike.
+
+## Decision
+
+We will {decision}.
+
+## Consequences
+
+Everything changes accordingly, and follow-up work lands in later records.
+"""
+
+
+@pytest.fixture
+def docs_repo(tmp_path):
+    adr = tmp_path / "docs" / "adr"
+    adr.mkdir(parents=True)
+    specs = [
+        ("Use Postgres for the registry", "The registry needs transactional writes."),
+        ("Ship a remote MCP developer setup", "Developers need a one-command setup."),
+        ("Adopt nightly batch builds", "Streaming would add operational burden."),
+        ("Keep services self-contained", "Shared libraries created lockstep deploys."),
+    ]
+    for i, (title, context) in enumerate(specs):
+        (adr / f"000{i}-x.md").write_text(
+            ADR_TEXT.format(n=i, title=title, context=context, decision=title.lower()),
+            encoding="utf-8",
+        )
+    contract = tmp_path / "docs" / "contracts.md"
+    contract.write_text(
+        "# Evidence contract\n\n## Levels\n\n"
+        "The table below defines what is served at each evidence level and why.\n\n"
+        "| Level | Content | Served via |\n|---|---|---|\n"
+        "| L0 | One-line claim | card |\n| L1 | Card summary | card |\n"
+        "| L2 | Raw chunk | open_evidence |\n| L3 | Expanded neighborhood | open_evidence |\n",
+        encoding="utf-8",
+    )
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "agent.md").write_text("# never quiz this\n" + "x" * 200)
+    return tmp_path
+
+
+def test_discover_doc_files_excludes_dot_dirs(docs_repo) -> None:
+    from roger import docs
+
+    files = docs.discover_doc_files(["docs", ".claude"], repo_root=docs_repo)
+    names = {f.name for f in files}
+    assert "contracts.md" in names and "0000-x.md" in names
+    assert "agent.md" not in names  # dotted dirs never quizzed
+
+
+def test_adr_questions_use_other_decisions_as_distractors(docs_repo) -> None:
+    from roger import docs
+
+    files = docs.discover_doc_files(["docs"], repo_root=docs_repo)
+    questions = docs.adr_questions(files, "medium", random.Random(1), repo_root=docs_repo)
+    assert questions
+    q = questions[0]
+    all_titles = {
+        "Use Postgres for the registry", "Ship a remote MCP developer setup",
+        "Adopt nightly batch builds", "Keep services self-contained",
+    }
+    assert set(q.options.values()) <= all_titles     # every option is a real decision
+    assert q.options[q.correct] in all_titles
+    assert q.tier == 0 and q.language == "markdown"
+    assert q.snippet  # the context is shown
+
+
+def test_table_questions_quiz_real_cells(docs_repo) -> None:
+    from roger import docs
+
+    files = docs.discover_doc_files(["docs"], repo_root=docs_repo)
+    sections = []
+    for f in files:
+        rel = str(f.relative_to(docs_repo))
+        sections.extend(docs.split_sections(rel, f.read_text(encoding="utf-8")))
+    questions = docs.table_questions(sections, "medium", random.Random(2))
+    assert questions
+    q = questions[0]
+    cells = {"One-line claim", "Card summary", "Raw chunk", "Expanded neighborhood",
+             "card", "open_evidence"}
+    assert q.options[q.correct] in cells
+
+
+def test_doc_questions_end_to_end_mixes_formats(docs_repo) -> None:
+    from roger import docs
+
+    questions = docs.doc_questions(
+        count=3, difficulty="medium", paths=["docs"], repo_root=docs_repo,
+        rng=random.Random(3),
+    )
+    assert 1 <= len(questions) <= 3
+    assert all(q.tier == 0 for q in questions)
+
+
+def test_doc_questions_files_restriction(docs_repo) -> None:
+    from roger import docs
+
+    questions = docs.doc_questions(
+        count=3, difficulty="medium", repo_root=docs_repo,
+        files=["docs/contracts.md"], rng=random.Random(4),
+    )
+    assert questions
+    assert all(q.node_id == "docs/contracts.md" for q in questions)
+
+
+def test_doc_questions_empty_repo_is_silent(tmp_path) -> None:
+    from roger import docs
+
+    assert docs.doc_questions(count=3, repo_root=tmp_path, rng=random.Random(5)) == []

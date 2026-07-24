@@ -15,7 +15,8 @@ from pathlib import Path
 
 from roger.config import load_config
 from roger.exceptions import GraphNotFoundError, ModelNotRegisteredError, OllamaNotRunningError
-from roger.generator import iter_questions
+from roger.docs import doc_questions
+from roger.generator import interleave_questions, iter_questions
 from roger.graph import get_changed_nodes, get_quizzable_nodes, load_graph
 from roger.quiz import QuestionStream, node_display_names, run_quiz
 from roger.storage import record_session, record_skip
@@ -54,19 +55,34 @@ def run_guard() -> None:
     # stubs and entry markers make meaningless questions.
     quizzable = set(get_quizzable_nodes(graph, exclude_tests=False))
     changed_nodes = [n for n in changed_nodes if n in quizzable]
-    if not changed_nodes:
+
+    # Changed docs are quiz material too: you edited the ADR, prove you
+    # know what it says.
+    staged_docs = [f for f in staged_files if f.lower().endswith((".md", ".markdown"))]
+    doc_qs = (
+        doc_questions(files=staged_docs, count=2, difficulty=config.guard.difficulty)
+        if staged_docs and config.docs.enabled
+        else []
+    )
+    if not changed_nodes and not doc_qs:
         sys.exit(0)
 
     # Stream: the first question appears as soon as it is ready; the next
     # generates while the developer answers — commit-time waiting shrinks
     # to a single generation.
+    code_count = max(0, config.quiz.questions_per_session - len(doc_qs))
     stream = QuestionStream(
-        iter_questions(
-            changed_nodes,
-            graph,
-            difficulty=config.guard.difficulty,
-            count=config.quiz.questions_per_session,
-            config=config,
+        interleave_questions(
+            iter_questions(
+                changed_nodes,
+                graph,
+                difficulty=config.guard.difficulty,
+                count=code_count,
+                config=config,
+            )
+            if changed_nodes and code_count
+            else iter(()),
+            doc_qs,
         )
     )
     try:

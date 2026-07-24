@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Iterator, Optional
+import random
+from typing import Iterable, Iterator, Optional
 
 import networkx as nx
 
@@ -79,6 +80,7 @@ def iter_questions(
     difficulty: str = "medium",
     count: int = 5,
     config: Optional[Config] = None,
+    rng: Optional[random.Random] = None,
 ) -> Iterator[Question]:
     """Yield up to `count` questions lazily, as each becomes ready.
 
@@ -93,6 +95,7 @@ def iter_questions(
     the last error is raised.
     """
     config = config or Config()
+    rng = rng or random.Random()
     # Ask each node for a small batch rather than `count` apiece: the model
     # must fit its JSON inside num_predict tokens, and long identifiers make
     # 5-question responses truncate mid-array. A couple per node still gives
@@ -128,6 +131,9 @@ def iter_questions(
         fresh = [q for q in batch if q.question not in seen_texts]
         if not fresh:
             continue
+        # A cached node always serves the same batch — shuffle so repeat
+        # sessions don't repeat the identical question from it every time.
+        rng.shuffle(fresh)
         seen_texts.add(fresh[0].question)
         yielded += 1
         yield fresh[0]
@@ -143,6 +149,18 @@ def iter_questions(
 
     if yielded == 0 and last_error is not None:
         raise last_error
+
+
+def interleave_questions(
+    stream: Iterable[Question], extras: list[Question]
+) -> Iterator[Question]:
+    """Weave pre-built questions (docs — instant) between streamed ones."""
+    remaining = list(extras)
+    for question in stream:
+        yield question
+        if remaining:
+            yield remaining.pop(0)
+    yield from remaining
 
 
 def generate_questions(
