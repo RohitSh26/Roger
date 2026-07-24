@@ -1232,3 +1232,28 @@ def test_get_design_questions_never_block(
     monkeypatch.setattr(local, "is_ollama_running", lambda *a, **k: True)
     monkeypatch.setattr(local, "call_local", lambda *a, **k: {"nope": 1})
     assert router.get_design_questions(graph, "medium", 1) == []  # bad output
+
+
+def test_parse_questions_rejects_lookup_trivia() -> None:
+    raw = {
+        "questions": [
+            {
+                "question": "Which file is normalize_query defined in?",
+                "options": {"A": "a.py", "B": "b.py", "C": "c.py", "D": "d.py"},
+                "correct": "A",
+            },
+            {
+                "question": "What does search() directly call to rank hits?",
+                "options": {"A": "sorted", "B": "min", "C": "sum", "D": "map"},
+                "correct": "A",
+            },
+            {
+                "question": "Why does search() keep only the best hit per artifact?",
+                "options": {"A": "dedupe results", "B": "save memory", "C": "sort faster", "D": "limit tokens"},
+                "correct": "A",
+            },
+        ]
+    }
+    questions = router.parse_questions(raw, node_id="n1", difficulty="medium", tier=1)
+    assert len(questions) == 1
+    assert questions[0].question.startswith("Why does search()")

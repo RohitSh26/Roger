@@ -73,6 +73,8 @@ RULES — every question must pass all of these:
   is shown — ask only about the visible part.
 - Cover test: a developer who understands this code can answer before
   reading the options.
+- Never ask where something is defined, which file holds it, or what calls
+  what — those are IDE lookups, not understanding.
 - No giveaways: the question never contains or paraphrases its own answer,
   and the correct option never merely restates the name {name} — a
   self-answering question is worthless.
@@ -259,6 +261,13 @@ _META_MARKER_RE = re.compile(
     r"(?i)(\boptions?\s*:|\bcorrect\s*:|\banswer\s+is\b|\bright\s+answer\b|\bwrong\s+option)"
 )
 
+# Structure-lookup questions the memory rule forbids: where something lives
+# and what calls what are IDE lookups, not understanding.
+_LOOKUP_RECALL_RE = re.compile(
+    r"(?i)(\bwhich\s+file\b|\bwhat\s+file\b|\bis\s+defined\s+in\b"
+    r"|\bdirectly\s+calls?\b|\bdirectly\s+invoke|\blocated\s+in\b)"
+)
+
 # Code identifiers a question refers to: `backticked` names and call-style
 # tokens like _run_case().
 _CODE_REF_RE = re.compile(r"`([^`]+)`|\b([A-Za-z_][\w.]*)\s*\(\)")
@@ -352,6 +361,8 @@ def parse_questions(
             continue
         if _is_out_of_scope(str(item["question"]), subject, snippet):
             continue
+        if _LOOKUP_RECALL_RE.search(str(item["question"])):
+            continue  # lookup trivia, not comprehension
         questions.append(
             Question(
                 node_id=node_id,
