@@ -6,14 +6,32 @@ import sys
 import time
 from typing import Optional
 
-from rich.console import Console
+from rich.console import Console, Group
 from rich.markup import escape
 from rich.panel import Panel
+from rich.syntax import Syntax
+from rich.text import Text
 
 from roger.grader import grade_answer, has_passed, score_answers
 from roger.models import Question, QuizAnswer, QuizResult
 
 VALID_KEYS = ("A", "B", "C", "D")
+
+_LANGUAGE_BY_EXT = {
+    ".py": "python", ".ts": "typescript", ".tsx": "typescript",
+    ".js": "javascript", ".jsx": "javascript", ".go": "go", ".java": "java",
+    ".rb": "ruby", ".rs": "rust", ".c": "c", ".h": "c", ".cpp": "cpp",
+    ".cc": "cpp", ".cs": "csharp", ".sh": "bash", ".php": "php",
+    ".kt": "kotlin", ".swift": "swift", ".scala": "scala", ".sql": "sql",
+    ".md": "markdown", ".json": "json", ".yaml": "yaml", ".yml": "yaml",
+    ".toml": "toml",
+}
+
+
+def language_for_file(file: str) -> str:
+    """Highlighting language for a file path, or 'text' when unknown."""
+    dot = file.rfind(".")
+    return _LANGUAGE_BY_EXT.get(file[dot:].lower(), "text") if dot != -1 else "text"
 
 
 def node_display_names(graph, questions: list[Question]) -> dict[str, str]:
@@ -71,20 +89,28 @@ def _read_key() -> str:
 def _show_question(
     console: Console, question: Question, index: int, total: int, node_label: str
 ) -> None:
-    # Question text, snippets, and options carry real code — escape so Rich
-    # never eats [brackets] as markup.
-    body_lines = [escape(question.question)]
+    # Text renderables take code literally — no markup escaping worries —
+    # and Syntax gives real highlighting plus line numbers in the terminal.
+    parts: list = [Text(question.question), Text("")]
     if question.snippet:
-        body_lines.append("")
-        body_lines.extend(
-            f"[dim]  {escape(line)}[/dim]" for line in question.snippet.splitlines()
+        parts.append(
+            Syntax(
+                question.snippet,
+                question.language or "text",
+                theme="ansi_dark",
+                line_numbers=True,
+                word_wrap=True,
+            )
         )
-    body_lines.append("")
+        parts.append(Text(""))
+    options = Text()
     for key in VALID_KEYS:
-        body_lines.append(f"  [bold]{key}[/bold]) {escape(question.options[key])}")
+        options.append(f"  {key}) ", style="bold")
+        options.append(f"{question.options[key]}\n")
+    parts.append(options)
     console.print(
         Panel(
-            "\n".join(body_lines),
+            Group(*parts),
             title=f"Question {index} of {total} | {node_label}",
             title_align="left",
             border_style="cyan",

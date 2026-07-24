@@ -16,6 +16,7 @@ class Question:
     difficulty: str          # "simple" | "medium" | "hard"
     tier: int                # 0 = template, 1 = local LLM
     snippet: str = ""        # source excerpt shown with the question (may be blanked for cloze)
+    language: str = ""       # highlighting hint for the snippet ("python", "go", …)
 
 
 @dataclass
