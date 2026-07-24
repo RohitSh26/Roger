@@ -118,11 +118,16 @@ _JUNK_NODE_RE = re.compile(r"(?:rationale_\d+|__?entry)$")
 
 
 def _looks_like_test_file(file: str) -> bool:
-    name = file.rsplit("/", 1)[-1]
+    """Language-agnostic test-file conventions: Python, Go, JS/TS, Java, Ruby…"""
+    name = file.rsplit("/", 1)[-1].lower()
+    stem = name.rsplit(".", 1)[0]
     return (
-        any(segment in ("test", "tests") for segment in file.split("/"))
-        or name.startswith("test_")
-        or name.endswith("_test.py")
+        any(segment in ("test", "tests", "spec", "specs", "__tests__")
+            for segment in file.lower().split("/"))
+        or name.startswith("test_")            # Python
+        or stem.endswith("_test")              # Go, Python, C++
+        or stem.endswith((".test", ".spec"))   # JS/TS: foo.test.ts, foo.spec.js
+        or stem.endswith(("tests", "test"))    # Java: FooTest.java, FooTests.java
     )
 
 
