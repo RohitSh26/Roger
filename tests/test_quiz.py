@@ -222,3 +222,49 @@ def test_quiz_template_file_matches_embedded_copy() -> None:
 
     template = Path(__file__).resolve().parent.parent / "templates" / "quiz.html.jinja"
     assert template.read_text(encoding="utf-8") == EMBEDDED_TEMPLATE
+
+
+# --- streaming ----------------------------------------------------------------
+
+
+def test_question_stream_delivers_in_order_and_prefetches() -> None:
+    questions = [make_question(node_id=f"n{i}", text=f"Q{i}?") for i in range(4)]
+    stream = quiz_module.QuestionStream(iter(questions), prefetch=2)
+    assert [q.question for q in stream] == ["Q0?", "Q1?", "Q2?", "Q3?"]
+
+
+def test_question_stream_error_only_when_nothing_delivered() -> None:
+    def empty_failing():
+        raise ValueError("nothing worked")
+        yield  # pragma: no cover
+
+    with pytest.raises(ValueError):
+        list(quiz_module.QuestionStream(empty_failing()))
+
+    def partial():
+        yield make_question(text="Q1?")
+        raise ValueError("later failure")
+
+    # Partial delivery: the stream just ends early, no exception.
+    delivered = list(quiz_module.QuestionStream(partial()))
+    assert len(delivered) == 1
+
+
+def test_run_quiz_accepts_streaming_input(monkeypatch: pytest.MonkeyPatch) -> None:
+    questions = [
+        make_question(node_id="n1", text="Q1?", correct="A"),
+        make_question(node_id="n2", text="Q2?", correct="B"),
+    ]
+    pressed = iter(["A", "B"])
+    monkeypatch.setattr(quiz_module, "collect_keypress", lambda: next(pressed))
+    buffer = io.StringIO()
+    console = Console(file=buffer, force_terminal=False, width=100)
+    result = run_quiz(
+        quiz_module.QuestionStream(iter(questions)),
+        session_type="quiz",
+        pass_threshold=2,
+        console=console,
+        total=5,  # stream planned 5 but delivered 2 — grade what was asked
+    )
+    assert (result.score, result.total, result.passed) == (2, 2, True)
+    assert "Question 1 of 5" in buffer.getvalue()

@@ -17,19 +17,18 @@ import requests
 import typer
 from rich.console import Console
 
-from roger.config import CONFIG_PATH, ROGER_DIR, load_config, write_default_config
+from roger.config import CONFIG_PATH, ROGER_DIR, Config, load_config, write_default_config
 from roger.exceptions import (
     CacheError,
     GraphNotFoundError,
     ModelNotRegisteredError,
     OllamaNotRunningError,
 )
-from roger.generator import generate_questions
+from roger.generator import generate_questions, iter_questions
 from roger.graph import get_god_nodes, get_quizzable_nodes, load_graph
 from roger.hooks.pre_commit import install_hook, run_guard, uninstall_hook
-from roger.config import Config
 from roger.llm.local import DEFAULT_MODEL, MODELFILE_CONTENT
-from roger.quiz import node_display_names, run_quiz
+from roger.quiz import QuestionStream, node_display_names, run_quiz
 from roger.storage import init_dbs, record_session
 from roger.webquiz import record_answer_code, render_quiz_html
 
@@ -206,30 +205,23 @@ def quiz(
     if graph.number_of_nodes() == 0:
         _fail("✗ Roger: the knowledge graph is empty. Rebuild it with: roger init")
 
-    node_ids = _pick_quiz_nodes(
-        graph, config.quiz.questions_per_session, config.graph.god_node_weight
-    )
-    console.print(
-        f"Generating {config.quiz.questions_per_session} "
-        f"{config.quiz.default_difficulty} questions…"
-    )
-    try:
-        questions = generate_questions(
-            node_ids,
-            graph,
-            difficulty=config.quiz.default_difficulty,
-            count=config.quiz.questions_per_session,
-            config=config,
-        )
-    except (OllamaNotRunningError, ModelNotRegisteredError, CacheError, ValueError) as exc:
-        _fail(str(exc))
-        return
+    count = config.quiz.questions_per_session
+    difficulty = config.quiz.default_difficulty
+    node_ids = _pick_quiz_nodes(graph, count, config.graph.god_node_weight)
+    names = node_display_names(graph, node_ids)
 
-    if not questions:
-        _fail("✗ Roger: could not generate any questions for this repo.")
-
-    names = node_display_names(graph, questions)
     if web:
+        # The page is a static file, so it needs every question up front.
+        console.print(f"Generating {count} {difficulty} questions…")
+        try:
+            questions = generate_questions(
+                node_ids, graph, difficulty=difficulty, count=count, config=config
+            )
+        except (OllamaNotRunningError, ModelNotRegisteredError, CacheError, ValueError) as exc:
+            _fail(str(exc))
+            return
+        if not questions:
+            _fail("✗ Roger: could not generate any questions for this repo.")
         page = render_quiz_html(
             questions,
             session_type="quiz",
@@ -241,12 +233,26 @@ def quiz(
         webbrowser.open(page.resolve().as_uri())
         return
 
-    result = run_quiz(
-        questions,
-        session_type="quiz",
-        pass_threshold=config.quiz.pass_threshold,
-        node_names=names,
+    # Terminal mode streams: the first question appears as soon as it is
+    # ready, and the next one generates while the developer answers.
+    console.print(f"Preparing {count} {difficulty} questions — the rest generate as you answer…")
+    stream = QuestionStream(
+        iter_questions(node_ids, graph, difficulty=difficulty, count=count, config=config)
     )
+    try:
+        result = run_quiz(
+            stream,
+            session_type="quiz",
+            pass_threshold=config.quiz.pass_threshold,
+            node_names=names,
+            total=count,
+        )
+    except (OllamaNotRunningError, ModelNotRegisteredError, CacheError, ValueError) as exc:
+        _fail(str(exc))
+        return
+
+    if result.total == 0:
+        _fail("✗ Roger: could not generate any questions for this repo.")
     try:
         record_session(result)
     except CacheError as exc:

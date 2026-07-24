@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Optional
+from typing import Iterator, Optional
 
 import networkx as nx
 
@@ -73,6 +73,78 @@ def select_questions(
     return selected
 
 
+def iter_questions(
+    node_ids: list[str],
+    graph: nx.DiGraph,
+    difficulty: str = "medium",
+    count: int = 5,
+    config: Optional[Config] = None,
+) -> Iterator[Question]:
+    """Yield up to `count` questions lazily, as each becomes ready.
+
+    For each node: hash the node + 1-hop subgraph, hit the cache, and on a
+    miss route to Tier 0/1 and cache the result. One question per node is
+    yielded first (variety), then leftovers fill the remainder. Because
+    generation happens on demand, a UI can show question 1 while question 2
+    generates behind the scenes. Node order is the caller's priority order
+    (god nodes first for whole-repo quizzes).
+
+    A node the model can't handle is skipped; if NO node yields anything,
+    the last error is raised.
+    """
+    config = config or Config()
+    # Ask each node for a small batch rather than `count` apiece: the model
+    # must fit its JSON inside num_predict tokens, and long identifiers make
+    # 5-question responses truncate mid-array. A couple per node still gives
+    # a pool ~2x the session size.
+    per_node = min(5, max(2, -(-count // len(node_ids)))) if node_ids else count
+
+    yielded = 0
+    seen_texts: set[str] = set()
+    leftovers: list[Question] = []
+    last_error: Exception | None = None
+
+    for node_id in node_ids:
+        if yielded >= count:
+            break
+        node = g.get_node(graph, node_id)
+        subgraph = g.get_subgraph(graph, node_id, hops=1)
+        node_hash = hash_node(node, subgraph)
+
+        cached = get_cached_questions(node_hash)
+        batch: list[Question] = []
+        if cached is not None:
+            batch = [q for q in cached if q.difficulty == difficulty]
+        if not batch:
+            try:
+                batch = get_questions_from_llm(node, graph, difficulty, per_node, config=config)
+            except ValueError as exc:
+                # One node the model can't write valid questions for must not
+                # kill the whole quiz — skip it and quiz on the rest.
+                last_error = exc
+                continue
+            cache_questions(node_hash, node_id, difficulty, batch, config.model.local)
+
+        fresh = [q for q in batch if q.question not in seen_texts]
+        if not fresh:
+            continue
+        seen_texts.add(fresh[0].question)
+        yielded += 1
+        yield fresh[0]
+        for extra in fresh[1:]:
+            seen_texts.add(extra.question)
+            leftovers.append(extra)
+
+    for question in leftovers:
+        if yielded >= count:
+            break
+        yielded += 1
+        yield question
+
+    if yielded == 0 and last_error is not None:
+        raise last_error
+
+
 def generate_questions(
     node_ids: list[str],
     graph: nx.DiGraph,
@@ -80,46 +152,6 @@ def generate_questions(
     count: int = 5,
     config: Optional[Config] = None,
 ) -> list[Question]:
-    """Main entry point for question generation.
-
-    For each node: hash the node + 1-hop subgraph, hit the cache, and on a
-    miss route to Tier 0/1 and cache the result. Then select `count`
-    questions from the pool, weighted toward god nodes.
-    """
-    config = config or Config()
-    pool: list[Question] = []
-    last_error: Exception | None = None
-
-    # Ask each node for a small batch rather than `count` apiece: the 1B
-    # model must fit its JSON inside num_predict tokens, and long node ids
-    # make 5-question responses truncate mid-array. A couple per node still
-    # gives the selector a pool ~2x the session size.
-    per_node = min(5, max(2, -(-count // len(node_ids)))) if node_ids else count
-
-    for node_id in node_ids:
-        node = g.get_node(graph, node_id)
-        subgraph = g.get_subgraph(graph, node_id, hops=1)
-        node_hash = hash_node(node, subgraph)
-
-        cached = get_cached_questions(node_hash)
-        if cached is not None:
-            matching = [q for q in cached if q.difficulty == difficulty]
-            if matching:
-                pool.extend(matching)
-                continue
-
-        try:
-            questions = get_questions_from_llm(node, graph, difficulty, per_node, config=config)
-        except ValueError as exc:
-            # One node the model can't write valid questions for must not
-            # kill the whole quiz — skip it and quiz on the rest.
-            last_error = exc
-            continue
-        cache_questions(node_hash, node_id, difficulty, questions, config.model.local)
-        pool.extend(questions)
-
-    if not pool and last_error is not None:
-        raise last_error
-
-    god_node_ids = g.get_god_nodes(graph) if config.graph.god_node_weight else []
-    return select_questions(pool, count, god_node_ids)
+    """Materialized form of iter_questions — for the web page and callers
+    that need every question up front."""
+    return list(iter_questions(node_ids, graph, difficulty, count, config))

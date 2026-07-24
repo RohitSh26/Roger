@@ -1061,3 +1061,46 @@ def test_mutant_is_hard_mode_only(
     assert not any("differs from the real implementation" in q.question for q in medium)
     hard = router.get_questions(node, graph, "hard", 3)
     assert any("differs from the real implementation" in q.question for q in hard)
+
+
+# --- streaming generation ----------------------------------------------------------
+
+
+def test_iter_questions_is_lazy(
+    graph_in_repo: nx.DiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = {"count": 0}
+
+    def fake_llm(node, graph, difficulty, count, config=None):
+        calls["count"] += 1
+        return [make_question(node_id=node["id"], text=f"Q {node['id']}?")]
+
+    monkeypatch.setattr(generator, "get_questions_from_llm", fake_llm)
+    stream = generator.iter_questions(
+        ["payments.charge", "db.connect"], graph_in_repo, "medium", count=2
+    )
+    first = next(stream)
+    assert calls["count"] == 1          # second node untouched until needed
+    assert first.node_id == "payments.charge"
+    second = next(stream)
+    assert calls["count"] == 2
+    assert second.node_id == "db.connect"
+
+
+def test_iter_questions_dedupes_and_fills_from_leftovers(
+    graph_in_repo: nx.DiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_llm(node, graph, difficulty, count, config=None):
+        return [
+            make_question(node_id=node["id"], text="Shared question?"),
+            make_question(node_id=node["id"], text=f"Unique to {node['id']}?"),
+        ]
+
+    monkeypatch.setattr(generator, "get_questions_from_llm", fake_llm)
+    questions = list(
+        generator.iter_questions(
+            ["payments.charge", "db.connect"], graph_in_repo, "medium", count=3
+        )
+    )
+    texts = [q.question for q in questions]
+    assert len(texts) == len(set(texts)) == 3   # duplicate absorbed, leftovers fill
