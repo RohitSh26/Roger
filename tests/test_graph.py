@@ -359,3 +359,82 @@ def test_snippet_char_budget_cuts_on_line_boundary(tmp_path: Path) -> None:
     assert snippet.endswith(g.TRUNCATION_MARKER)
     for line in snippet.splitlines()[:-1]:
         assert line == "def wide():" or line.endswith("a")  # no mid-line cuts
+
+
+# --- generalization guardrails: Roger must work on any repo, any language ---------
+
+
+@pytest.mark.parametrize(
+    ("file", "is_test"),
+    [
+        ("src/payments/charge.py", False),
+        ("tests/test_charge.py", True),          # Python
+        ("pkg/broker/broker_test.go", True),      # Go
+        ("pkg/broker/broker.go", False),
+        ("src/cart/cart.spec.ts", True),          # JS/TS spec
+        ("src/cart/Cart.test.tsx", True),         # JS/TS test
+        ("src/cart/Cart.tsx", False),
+        ("src/main/java/App.java", False),
+        ("src/test/java/AppTest.java", True),     # Java (dir + suffix)
+        ("lib/__tests__/util.js", True),          # Jest convention
+        ("app/models/protester.rb", False),       # 'test' inside a word ≠ test file
+    ],
+)
+def test_test_file_detection_across_languages(file: str, is_test: bool) -> None:
+    assert g._looks_like_test_file(file) is is_test
+
+
+GO_SOURCE = """\
+package broker
+
+func RankHits(hits []Hit, top int) []Hit {
+	best := map[string]Hit{}
+	for _, h := range hits {
+		cur, ok := best[h.ID]
+		if !ok || h.Score > cur.Score {
+			best[h.ID] = h
+		}
+	}
+	return sortHits(best, top)
+}
+
+func sortHits(m map[string]Hit, top int) []Hit {
+	return nil
+}
+"""
+
+TS_SOURCE = """\
+export function rankHits(hits: Hit[], top: number): Hit[] {
+  const best = new Map<string, Hit>();
+  for (const h of hits) {
+    const cur = best.get(h.id);
+    if (cur === undefined || h.score > cur.score) {
+      best.set(h.id, h);
+    }
+  }
+  return [...best.values()].slice(0, top);
+}
+
+export function other(): number {
+  return 1;
+}
+"""
+
+
+@pytest.mark.parametrize(
+    ("filename", "source", "must_contain", "must_not_contain"),
+    [
+        ("rank.go", GO_SOURCE, "return sortHits(best, top)", "func sortHits"),
+        ("rank.ts", TS_SOURCE, ".slice(0, top)", "export function other"),
+    ],
+)
+def test_block_extraction_works_across_languages(
+    tmp_path: Path, filename: str, source: str, must_contain: str, must_not_contain: str
+) -> None:
+    (tmp_path / filename).write_text(source, encoding="utf-8")
+    snippet = g.get_source_snippet(
+        {"file": filename, "source_location": "L3" if filename.endswith(".go") else "L1"},
+        repo_root=tmp_path,
+    )
+    assert must_contain in snippet       # reaches the true end of the block
+    assert must_not_contain not in snippet  # stops before the next declaration

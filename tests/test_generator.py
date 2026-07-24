@@ -970,3 +970,32 @@ def test_parse_questions_drops_out_of_scope_items() -> None:
     )
     assert len(questions) == 1
     assert "search()" in questions[0].question
+
+
+# --- generalization: constructed formats on non-Python languages ------------------
+
+
+from tests.test_graph import GO_SOURCE, TS_SOURCE  # noqa: E402
+
+
+@pytest.mark.parametrize("source", [GO_SOURCE, TS_SOURCE])
+def test_cloze_and_mutant_work_on_other_languages(
+    source: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import random
+
+    from roger.config import Config
+
+    monkeypatch.setattr(
+        local,
+        "call_local",
+        lambda *a, **k: {"alternatives": ["best.clear()", "return nil // early", "cur = h"]},
+    )
+    node = {"id": "n1", "display": "rankHits", "file": "rank.x"}
+    cloze = router.build_cloze_question(node, source, "medium", Config(), rng=random.Random(2))
+    assert cloze is not None and "________" in cloze.snippet
+
+    mutant = router.build_mutant_question(node, source, "hard", rng=random.Random(2))
+    assert mutant is not None
+    real_norms = {" ".join(line.split()) for line in source.splitlines()}
+    assert mutant.options[mutant.correct] not in real_norms  # the altered line
