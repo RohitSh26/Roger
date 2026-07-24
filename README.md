@@ -110,12 +110,31 @@ graph before a quiz session or after merging a significant branch.
 |---|---|
 | `roger init` | One-time setup for a repo: graph build, model registration, config |
 | `roger quiz` | Whole-repo quiz using the settings in `.roger/config.toml` |
+| `roger quiz -n 10` | Override the session size (default: `questions_per_session` in config) |
+| `roger quiz --web` | Take the quiz in the browser: highlighted code, keyboard shortcuts |
+| `roger record <CODE>` | Record a finished web session (the page shows the code) |
 | `roger guard` | Run the quiz on currently staged files (what the hook runs) |
 | `roger guard install` | Write the pre-commit hook to `.git/hooks/pre-commit` |
 | `roger guard uninstall` | Remove the hook (only if Roger installed it) |
 
 Planned (not yet built): `roger ask`, `roger chat`, `roger report`, `roger update`,
 `roger status`, and quiz scoping flags (`--module`, `--since`, `--difficulty`, `--count`).
+
+## What a session asks
+
+Each session mixes question categories, split automatically from the session
+size (so `questions_per_session = 9` scales the mix, nothing is hardcoded):
+
+1. **Decisions & docs** — constructed from ADRs, contracts, and tables in your
+   `docs/` (instant, no LLM). These open the session.
+2. **Code comprehension** — the local model asks about real source shown next
+   to the question: behavior, purpose, design intent, plus fill-in-the-blank
+   lines whose correct answer is the real code.
+3. **System design** — a module map built from the code graph (who owns what,
+   who calls across boundaries) with reasoning questions about ownership,
+   boundaries, and coupling. Closes the session.
+4. **Change resilience** (hard difficulty only) — spot the behavioral
+   alteration in otherwise-real code.
 
 ## The guard workflow
 

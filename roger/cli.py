@@ -7,6 +7,7 @@ Phase 1 commands: init, quiz, guard [install|uninstall].
 from __future__ import annotations
 
 import importlib.util
+import itertools
 import random
 import shutil
 import subprocess
@@ -25,7 +26,13 @@ from roger.exceptions import (
     OllamaNotRunningError,
 )
 from roger.docs import doc_questions
-from roger.generator import generate_questions, interleave_questions, iter_questions
+from roger.generator import (
+    generate_questions,
+    interleave_questions,
+    iter_questions,
+    order_cache_first,
+)
+from roger.llm.router import DESIGN_NODE_ID, get_design_questions
 from roger.graph import get_god_nodes, get_quizzable_nodes, load_graph
 from roger.hooks.pre_commit import install_hook, run_guard, uninstall_hook
 from roger.llm.local import DEFAULT_MODEL, MODELFILE_CONTENT
@@ -198,6 +205,12 @@ def quiz(
     web: bool = typer.Option(
         False, "--web", help="Take the quiz in the browser (highlighted code, no server)."
     ),
+    count: int = typer.Option(
+        0,
+        "--count",
+        "-n",
+        help="Questions this session (default: questions_per_session from .roger/config.toml).",
+    ),
 ) -> None:
     """Quiz yourself on this repo (whole repo, config defaults)."""
     config = load_config()
@@ -210,19 +223,29 @@ def quiz(
     if graph.number_of_nodes() == 0:
         _fail("✗ Roger: the knowledge graph is empty. Rebuild it with: roger init")
 
-    count = config.quiz.questions_per_session
+    # Session size: --count flag wins, else the config value — the
+    # docs/code/design split below scales automatically from it.
+    count = count if count > 0 else config.quiz.questions_per_session
     difficulty = config.quiz.default_difficulty
 
-    # Docs contribute ~a third of a session when the repo has quizzable
-    # docs (ADRs, tables, prose) — constructed instantly, no LLM.
+    # Session blueprint — even split across question categories:
+    # docs (instant, no LLM) open the session, code questions stream in the
+    # middle, one system-design question closes it (generated in the
+    # background while earlier questions are answered).
     doc_qs = (
         doc_questions(count=max(1, count // 3), difficulty=difficulty, paths=config.docs.paths)
         if config.docs.enabled
         else []
     )
-    code_count = max(1, count - len(doc_qs))
-    node_ids = _pick_quiz_nodes(graph, code_count, config.graph.god_node_weight)
+    design_share = 1 if count >= 4 else 0
+    code_count = max(1, count - len(doc_qs) - design_share)
+    node_ids = order_cache_first(
+        _pick_quiz_nodes(graph, code_count, config.graph.god_node_weight),
+        graph,
+        difficulty,
+    )
     names = node_display_names(graph, node_ids)
+    names[DESIGN_NODE_ID] = "system design (module map)"
 
     if web:
         # The page is a static file, so it needs every question up front.
@@ -234,8 +257,10 @@ def quiz(
         except (OllamaNotRunningError, ModelNotRegisteredError, CacheError, ValueError) as exc:
             _fail(str(exc))
             return
-        questions = questions + doc_qs
         random.shuffle(questions)
+        questions = doc_qs + questions  # instant openers first, like the terminal
+        if design_share:
+            questions += get_design_questions(graph, difficulty, design_share, config)
         if not questions:
             _fail("✗ Roger: could not generate any questions for this repo.")
         page = render_quiz_html(
@@ -253,10 +278,20 @@ def quiz(
     # ready, and the next one generates while the developer answers. Doc
     # questions (instant) are woven between the streamed code questions.
     console.print(f"Preparing {count} {difficulty} questions — the rest generate as you answer…")
+
+    def _design_tail():
+        if design_share:
+            yield from get_design_questions(graph, difficulty, design_share, config)
+
     stream = QuestionStream(
-        interleave_questions(
-            iter_questions(node_ids, graph, difficulty=difficulty, count=code_count, config=config),
-            doc_qs,
+        itertools.chain(
+            interleave_questions(
+                iter_questions(
+                    node_ids, graph, difficulty=difficulty, count=code_count, config=config
+                ),
+                doc_qs,
+            ),
+            _design_tail(),
         )
     )
     try:

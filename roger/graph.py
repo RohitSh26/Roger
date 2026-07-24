@@ -356,6 +356,68 @@ def get_source_snippet(
     return snippet
 
 
+def _module_of(file: str) -> str:
+    parts = [p for p in file.split("/") if p]
+    if not parts:
+        return ""
+    return "/".join(parts[:2]) if len(parts) > 2 else parts[0]
+
+
+def module_map(
+    graph: nx.DiGraph,
+    max_modules: int = 4,
+    max_components: int = 6,
+    max_edges: int = 12,
+) -> str:
+    """Human-readable map of the largest modules and their cross-module
+    call dependencies — the stimulus for system-design questions.
+
+    Modules come from directory structure (not numeric communities), so
+    the map reads the way developers talk about the system. Returns ""
+    when the repo has no meaningful multi-module structure.
+    """
+    # Only identifier-like names make useful map entries — doc-derived
+    # sentence labels and dunder noise would poison the design questions.
+    name_ok = re.compile(r"[A-Za-z_][\w.]*(\(\))?$")
+    members: dict[str, list[tuple[int, str]]] = {}
+    for node_id, attrs in graph.nodes(data=True):
+        module = _module_of(str(attrs.get("file") or ""))
+        name = str(attrs.get("display") or node_id)
+        if not module or not name_ok.fullmatch(name) or "__" in name:
+            continue
+        members.setdefault(module, []).append((graph.degree(node_id), name))
+    top = sorted(members, key=lambda m: -len(members[m]))[:max_modules]
+    if len(top) < 2:
+        return ""
+
+    lines = []
+    for module in top:
+        ranked = [n for _, n in sorted(members[module], reverse=True)]
+        components = list(dict.fromkeys(ranked))[:max_components]
+        lines.append(f"MODULE {module} — key components: {', '.join(components)}")
+    edge_lines: list[str] = []
+    seen: set[str] = set()
+    for src, dst, data in graph.edges(data=True):
+        if len(edge_lines) >= max_edges:
+            break
+        if not _is_call_edge(data):
+            continue
+        src_mod = _module_of(str(graph.nodes[src].get("file") or ""))
+        dst_mod = _module_of(str(graph.nodes[dst].get("file") or ""))
+        if src_mod == dst_mod or src_mod not in top or dst_mod not in top:
+            continue
+        line = (
+            f"{graph.nodes[src].get('display', src)} ({src_mod}) calls "
+            f"{graph.nodes[dst].get('display', dst)} ({dst_mod})"
+        )
+        if line not in seen:
+            seen.add(line)
+            edge_lines.append(line)
+    if not edge_lines:
+        return ""
+    return "\n".join(lines + ["", "CROSS-MODULE DEPENDENCIES:"] + edge_lines)
+
+
 def get_god_node_ids_from_report(report_path: str = REPORT_PATH) -> list[str]:
     """Parse GRAPH_REPORT.md to extract named god nodes — used for quiz weighting."""
     report = Path(report_path)

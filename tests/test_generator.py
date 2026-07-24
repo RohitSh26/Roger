@@ -1106,11 +1106,15 @@ def test_iter_questions_dedupes_and_fills_from_leftovers(
     assert len(texts) == len(set(texts)) == 3   # duplicate absorbed, leftovers fill
 
 
-def test_interleave_questions_weaves_extras() -> None:
+def test_interleave_questions_leads_with_instant_extra() -> None:
     code = [make_question(node_id=f"c{i}", text=f"C{i}?") for i in range(3)]
     docs = [make_question(node_id=f"d{i}", text=f"D{i}?") for i in range(2)]
     merged = list(generator.interleave_questions(iter(code), docs))
-    assert [q.question for q in merged] == ["C0?", "D0?", "C1?", "D1?", "C2?"]
+    # A pre-built (instant) question opens the session — zero wait for Q1.
+    assert [q.question for q in merged] == ["D0?", "C0?", "D1?", "C1?", "C2?"]
+    # Without extras the stream passes through untouched.
+    passthrough = list(generator.interleave_questions(iter(code), []))
+    assert [q.question for q in passthrough] == ["C0?", "C1?", "C2?"]
 
 
 def test_iter_questions_varies_across_sessions(
@@ -1133,3 +1137,98 @@ def test_iter_questions_varies_across_sessions(
         )
         firsts.add(next(stream).question)
     assert len(firsts) > 1  # cached batches no longer repeat one fixed question
+
+
+def test_order_cache_first_puts_warm_nodes_up_front(
+    graph_in_repo: nx.DiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from roger.storage import cache_questions
+
+    # Warm exactly one node's cache.
+    node = get_node(graph_in_repo, "db.connect")
+    sub = get_subgraph(graph_in_repo, "db.connect", hops=1)
+    cache_questions(
+        generator.hash_node(node, sub), "db.connect", "medium",
+        [make_question(node_id="db.connect")], "roger-local",
+    )
+    ordered = generator.order_cache_first(
+        ["payments.charge", "auth.login", "db.connect"], graph_in_repo, "medium"
+    )
+    assert ordered[0] == "db.connect"
+    assert set(ordered) == {"payments.charge", "auth.login", "db.connect"}
+
+
+# --- system-design questions ---------------------------------------------------
+
+
+def _multi_module_graph(tmp_path):
+    data = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": f"{m}_{i}", "label": f"{m}_comp{i}", "source_file": f"services/{m}/src/f{i}.py"}
+            for m in ("api", "worker") for i in range(4)
+        ],
+        "links": [
+            {"source": "api_0", "target": "worker_0", "relation": "calls"},
+            {"source": "api_1", "target": "worker_1", "relation": "calls"},
+            {"source": "api_0", "target": "api_1", "relation": "calls"},
+        ],
+    }
+    path = tmp_path / "graph.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return load_graph(str(path))
+
+
+def test_module_map_names_modules_and_cross_deps(tmp_path) -> None:
+    from roger import graph as g
+
+    graph = _multi_module_graph(tmp_path)
+    system_map = g.module_map(graph)
+    assert "MODULE services/api" in system_map
+    assert "MODULE services/worker" in system_map
+    assert "api_comp0 (services/api) calls worker_comp0 (services/worker)" in system_map
+    # Single-module graphs produce no map — design questions silently skip.
+    assert g.module_map(load_graph.__self__ if False else graph.subgraph(
+        [n for n in graph.nodes if n.startswith("api")]
+    ).copy()) == ""
+
+
+def test_get_design_questions_grounded_in_map(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    graph = _multi_module_graph(tmp_path)
+
+    raw = {
+        "questions": [
+            {
+                "question": "Which module owns request handling, given the components shown?",
+                "options": {
+                    "A": "services/api", "B": "services/worker",
+                    "C": "api_comp3", "D": "worker_comp2",
+                },
+                "correct": "A",
+                "explanation": "The api module holds the entry components.",
+            }
+        ]
+    }
+    monkeypatch.setattr(local, "is_ollama_running", lambda *a, **k: True)
+    monkeypatch.setattr(local, "call_local", lambda *a, **k: raw)
+
+    questions = router.get_design_questions(graph, "medium", 1)
+    assert len(questions) == 1
+    q = questions[0]
+    assert q.node_id == router.DESIGN_NODE_ID
+    assert q.language == "text"
+    assert "MODULE services/api" in q.snippet   # the developer sees the map
+
+
+def test_get_design_questions_never_block(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    graph = _multi_module_graph(tmp_path)
+    monkeypatch.setattr(local, "is_ollama_running", lambda *a, **k: False)
+    assert router.get_design_questions(graph, "medium", 1) == []  # ollama down
+
+    monkeypatch.setattr(local, "is_ollama_running", lambda *a, **k: True)
+    monkeypatch.setattr(local, "call_local", lambda *a, **k: {"nope": 1})
+    assert router.get_design_questions(graph, "medium", 1) == []  # bad output
