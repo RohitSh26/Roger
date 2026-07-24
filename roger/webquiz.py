@@ -143,6 +143,8 @@ EMBEDDED_TEMPLATE = r"""<!DOCTYPE html>
 <link rel="stylesheet"
       href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -161,6 +163,15 @@ EMBEDDED_TEMPLATE = r"""<!DOCTYPE html>
   .code pre { margin: 0; padding: 12px; flex: 1;
               font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; }
   .code code { background: transparent; padding: 0; white-space: pre; }
+  .md { background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+        padding: .9rem 1.2rem; margin: 0 0 1.25rem; overflow-x: auto; font-size: .92rem; }
+  .md h1, .md h2, .md h3 { font-size: 1rem; margin: .8rem 0 .4rem; }
+  .md table { border-collapse: collapse; margin: .6rem 0; }
+  .md th, .md td { border: 1px solid #30363d; padding: .35rem .75rem; }
+  .md code { background: #0d1117; padding: .1rem .35rem; border-radius: 4px;
+             font: 13px ui-monospace, Menlo, monospace; }
+  .md pre code { display: block; padding: .7rem; }
+  .md .mermaid { background: transparent; text-align: center; }
   .opt { display: block; width: 100%; text-align: left; margin: .5rem 0; padding: .7rem .9rem;
          background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 8px;
          font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; cursor: pointer; }
@@ -196,6 +207,7 @@ EMBEDDED_TEMPLATE = r"""<!DOCTYPE html>
   <div id="quiz">
     <div class="meta" id="nodeLabel"></div>
     <h2 id="questionText"></h2>
+    <div class="md" id="mdBlock" style="display:none"></div>
     <div class="code" id="codeBlock" style="display:none">
       <div class="gutter" id="gutter"></div>
       <pre><code id="snippet"></code></pre>
@@ -225,6 +237,7 @@ EMBEDDED_TEMPLATE = r"""<!DOCTYPE html>
 <script id="quiz-data" type="application/json">{{ questions_json }}</script>
 <script>
 (function () {
+  if (window.mermaid) { mermaid.initialize({ startOnLoad: false, theme: "dark" }); }
   var questions = JSON.parse(document.getElementById("quiz-data").textContent);
   var passThreshold = {{ pass_threshold }};
   var current = 0, picks = [], score = 0, answered = false;
@@ -239,7 +252,23 @@ EMBEDDED_TEMPLATE = r"""<!DOCTYPE html>
     el("nodeLabel").textContent = q.node_label || q.node_id;
     el("questionText").textContent = q.question;
 
-    if (q.snippet) {
+    el("mdBlock").style.display = "none";
+    el("codeBlock").style.display = "none";
+    if (q.snippet && q.language === "markdown" && window.marked) {
+      // Docs render as real markdown; mermaid fences become diagrams.
+      var md = el("mdBlock");
+      md.innerHTML = marked.parse(q.snippet);
+      md.querySelectorAll("pre code.language-mermaid").forEach(function (block) {
+        var holder = document.createElement("pre");
+        holder.className = "mermaid";
+        holder.textContent = block.textContent;
+        block.parentNode.replaceWith(holder);
+      });
+      if (window.mermaid) {
+        try { mermaid.run({ nodes: md.querySelectorAll(".mermaid") }); } catch (e) {}
+      }
+      md.style.display = "block";
+    } else if (q.snippet) {
       var lines = q.snippet.split("\n");
       el("gutter").textContent = lines.map(function (_, i) { return i + 1; }).join("\n");
       var codeEl = el("snippet");
@@ -250,8 +279,6 @@ EMBEDDED_TEMPLATE = r"""<!DOCTYPE html>
       delete codeEl.dataset.highlighted;
       if (window.hljs) { try { hljs.highlightElement(codeEl); } catch (e) {} }
       el("codeBlock").style.display = "flex";
-    } else {
-      el("codeBlock").style.display = "none";
     }
 
     var wrap = el("options");

@@ -9,6 +9,7 @@ import time
 from typing import Iterable, Iterator, Optional, Union
 
 from rich.console import Console, Group
+from rich.markdown import Markdown
 from rich.markup import escape
 from rich.panel import Panel
 from rich.syntax import Syntax
@@ -140,15 +141,20 @@ def _show_question(
     # and Syntax gives real highlighting plus line numbers in the terminal.
     parts: list = [Text(question.question), Text("")]
     if question.snippet:
-        parts.append(
-            Syntax(
-                question.snippet,
-                question.language or "text",
-                theme="ansi_dark",
-                line_numbers=True,
-                word_wrap=True,
+        if question.language == "markdown":
+            # Docs render as formatted markdown (headings, tables, lists) —
+            # raw pipe-tables and #-headings are unreadable as plain text.
+            parts.append(Markdown(question.snippet))
+        else:
+            parts.append(
+                Syntax(
+                    question.snippet,
+                    question.language or "text",
+                    theme="ansi_dark",
+                    line_numbers=True,
+                    word_wrap=True,
+                )
             )
-        )
         parts.append(Text(""))
     options = Text()
     for key in VALID_KEYS:

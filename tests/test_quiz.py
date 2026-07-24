@@ -268,3 +268,26 @@ def test_run_quiz_accepts_streaming_input(monkeypatch: pytest.MonkeyPatch) -> No
     )
     assert (result.score, result.total, result.passed) == (2, 2, True)
     assert "Question 1 of 5" in buffer.getvalue()
+
+
+def test_markdown_snippets_render_as_markdown(monkeypatch: pytest.MonkeyPatch) -> None:
+    question = make_question(node_id="docs/x.md", text="Which value belongs?", correct="A")
+    question.snippet = "## Levels\n\n| Level | Content |\n|---|---|\n| L0 | claim |\n| L2 | chunk |"
+    question.language = "markdown"
+    pressed = iter(["A"])
+    monkeypatch.setattr(quiz_module, "collect_keypress", lambda: next(pressed))
+    buffer = io.StringIO()
+    console = Console(file=buffer, force_terminal=False, width=100)
+    run_quiz([question], session_type="quiz", pass_threshold=1, console=console)
+    output = buffer.getvalue()
+    assert "Levels" in output and "chunk" in output
+    assert "|---|" not in output        # the raw pipe-table syntax is gone
+    assert "## Levels" not in output    # headings rendered, not shown raw
+
+
+def test_web_template_renders_markdown_and_mermaid() -> None:
+    from roger.webquiz import EMBEDDED_TEMPLATE
+
+    assert "marked.min.js" in EMBEDDED_TEMPLATE
+    assert "mermaid" in EMBEDDED_TEMPLATE
+    assert "language-mermaid" in EMBEDDED_TEMPLATE  # fences become diagrams
