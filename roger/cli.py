@@ -24,7 +24,8 @@ from roger.exceptions import (
     ModelNotRegisteredError,
     OllamaNotRunningError,
 )
-from roger.generator import generate_questions, iter_questions
+from roger.docs import doc_questions
+from roger.generator import generate_questions, interleave_questions, iter_questions
 from roger.graph import get_god_nodes, get_quizzable_nodes, load_graph
 from roger.hooks.pre_commit import install_hook, run_guard, uninstall_hook
 from roger.llm.local import DEFAULT_MODEL, MODELFILE_CONTENT
@@ -181,10 +182,14 @@ def _pick_quiz_nodes(graph, count: int, god_node_weight: bool) -> list[str]:
     picked: list[str] = []
     if god_node_weight:
         quizzable = set(candidates)
-        god = [n for n in get_god_nodes(graph, top_n=count * 4) if n in quizzable]
-        picked.extend(god[: max(1, count // 2)])
+        # Sample from a wider god pool instead of always leading with the
+        # same top nodes — repeat sessions should not repeat a fixed opener.
+        god_pool = [n for n in get_god_nodes(graph, top_n=count * 4) if n in quizzable]
+        god_share = max(1, count // 2)
+        picked.extend(random.sample(god_pool, min(god_share, len(god_pool))))
     remaining = [n for n in candidates if n not in set(picked)]
     picked.extend(random.sample(remaining, min(count - len(picked), len(remaining))))
+    random.shuffle(picked)
     return picked
 
 
@@ -207,7 +212,16 @@ def quiz(
 
     count = config.quiz.questions_per_session
     difficulty = config.quiz.default_difficulty
-    node_ids = _pick_quiz_nodes(graph, count, config.graph.god_node_weight)
+
+    # Docs contribute ~a third of a session when the repo has quizzable
+    # docs (ADRs, tables, prose) — constructed instantly, no LLM.
+    doc_qs = (
+        doc_questions(count=max(1, count // 3), difficulty=difficulty, paths=config.docs.paths)
+        if config.docs.enabled
+        else []
+    )
+    code_count = max(1, count - len(doc_qs))
+    node_ids = _pick_quiz_nodes(graph, code_count, config.graph.god_node_weight)
     names = node_display_names(graph, node_ids)
 
     if web:
@@ -215,11 +229,13 @@ def quiz(
         console.print(f"Generating {count} {difficulty} questions…")
         try:
             questions = generate_questions(
-                node_ids, graph, difficulty=difficulty, count=count, config=config
+                node_ids, graph, difficulty=difficulty, count=code_count, config=config
             )
         except (OllamaNotRunningError, ModelNotRegisteredError, CacheError, ValueError) as exc:
             _fail(str(exc))
             return
+        questions = questions + doc_qs
+        random.shuffle(questions)
         if not questions:
             _fail("✗ Roger: could not generate any questions for this repo.")
         page = render_quiz_html(
@@ -234,10 +250,14 @@ def quiz(
         return
 
     # Terminal mode streams: the first question appears as soon as it is
-    # ready, and the next one generates while the developer answers.
+    # ready, and the next one generates while the developer answers. Doc
+    # questions (instant) are woven between the streamed code questions.
     console.print(f"Preparing {count} {difficulty} questions — the rest generate as you answer…")
     stream = QuestionStream(
-        iter_questions(node_ids, graph, difficulty=difficulty, count=count, config=config)
+        interleave_questions(
+            iter_questions(node_ids, graph, difficulty=difficulty, count=code_count, config=config),
+            doc_qs,
+        )
     )
     try:
         result = run_quiz(

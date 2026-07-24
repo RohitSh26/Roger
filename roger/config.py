@@ -36,6 +36,10 @@ block_on_fail = true
 [graph]
 path = "graphify-out/graph.json"
 god_node_weight = true
+
+[docs]
+enabled = true
+paths = ["docs", "README.md"]
 """
 
 
@@ -71,12 +75,19 @@ class GraphConfig:
 
 
 @dataclass
+class DocsConfig:
+    enabled: bool = True
+    paths: list = field(default_factory=lambda: ["docs", "README.md"])
+
+
+@dataclass
 class Config:
     model: ModelConfig = field(default_factory=ModelConfig)
     ollama: OllamaConfig = field(default_factory=OllamaConfig)
     quiz: QuizConfig = field(default_factory=QuizConfig)
     guard: GuardConfig = field(default_factory=GuardConfig)
     graph: GraphConfig = field(default_factory=GraphConfig)
+    docs: DocsConfig = field(default_factory=DocsConfig)
 
 
 def _merge_section(section_cls: type, data: dict[str, Any]) -> Any:

@@ -245,6 +245,9 @@ EMBEDDED_TEMPLATE = r"""<!DOCTYPE html>
       var codeEl = el("snippet");
       codeEl.textContent = q.snippet;
       codeEl.className = q.language ? "language-" + q.language : "";
+      // hljs marks elements it has processed and refuses to re-highlight
+      // them — clear the marker or only question 1 gets colors.
+      delete codeEl.dataset.highlighted;
       if (window.hljs) { try { hljs.highlightElement(codeEl); } catch (e) {} }
       el("codeBlock").style.display = "flex";
     } else {

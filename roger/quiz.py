@@ -221,7 +221,17 @@ def run_quiz(
     if total is None and hasattr(questions, "__len__"):
         total = len(questions)  # type: ignore[arg-type]
 
-    for index, question in enumerate(questions, start=1):
+    iterator = iter(questions)
+    index = 0
+    while True:
+        # Visible only when there is a real wait — i.e. the next question
+        # is still generating behind the scenes.
+        with console.status("[dim]Preparing next question…[/dim]"):
+            try:
+                question = next(iterator)
+            except StopIteration:
+                break
+        index += 1
         _show_question(
             console,
             question,

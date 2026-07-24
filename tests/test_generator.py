@@ -1104,3 +1104,32 @@ def test_iter_questions_dedupes_and_fills_from_leftovers(
     )
     texts = [q.question for q in questions]
     assert len(texts) == len(set(texts)) == 3   # duplicate absorbed, leftovers fill
+
+
+def test_interleave_questions_weaves_extras() -> None:
+    code = [make_question(node_id=f"c{i}", text=f"C{i}?") for i in range(3)]
+    docs = [make_question(node_id=f"d{i}", text=f"D{i}?") for i in range(2)]
+    merged = list(generator.interleave_questions(iter(code), docs))
+    assert [q.question for q in merged] == ["C0?", "D0?", "C1?", "D1?", "C2?"]
+
+
+def test_iter_questions_varies_across_sessions(
+    graph_in_repo: nx.DiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import random
+
+    def fake_llm(node, graph, difficulty, count, config=None):
+        return [
+            make_question(node_id=node["id"], text=f"{node['id']} q{i}?")
+            for i in range(3)
+        ]
+
+    monkeypatch.setattr(generator, "get_questions_from_llm", fake_llm)
+    firsts = set()
+    for seed in range(8):
+        stream = generator.iter_questions(
+            ["payments.charge"], graph_in_repo, "medium", count=1,
+            rng=random.Random(seed),
+        )
+        firsts.add(next(stream).question)
+    assert len(firsts) > 1  # cached batches no longer repeat one fixed question
