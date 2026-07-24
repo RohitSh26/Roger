@@ -565,6 +565,83 @@ def build_mutant_question(
     )
 
 
+DESIGN_PROMPT = """\
+You are writing system-design questions for a developer who works in this
+codebase, in the style of a professional architecture review — testing
+judgment about structure, never memory.
+
+SYSTEM MAP (this is ALL you know, and the developer sees the same map):
+{module_map}
+
+Write {count} multiple-choice questions about the architecture shown:
+ownership ("which module should own a new X, given what each owns now?"),
+boundaries ("which component is the seam between A and B?"), coupling and
+dependency direction ("what does it imply that A calls B and not the
+reverse?"), and change placement ("where would adding X create the least
+coupling?").
+
+RULES:
+- Grounded: correct answers must be defensible from the map alone; wrong
+  options are real module/component names from the map, used incorrectly.
+- The developer sees the same map — never ask them to recall it, ask them
+  to reason about it.
+- Cover test, no giveaways, options in the same grammatical form and
+  similar length. Never say "node", "graph", or "community".
+- Explanations must teach the architectural reasoning in one or two
+  sentences.
+
+Respond with JSON only, no other text:
+{{"questions": [{{"question": "...", "options": {{"A": "...", "B": "...", "C": "...", "D": "..."}}, "correct": "B", "explanation": "..."}}]}}
+"""
+
+DESIGN_NODE_ID = "system design"
+
+
+def get_design_questions(
+    graph: nx.DiGraph,
+    difficulty: str,
+    count: int,
+    config: Optional[Config] = None,
+) -> list[Question]:
+    """System-design questions over the repo's module map.
+
+    Optional garnish for a session: returns [] rather than raising when the
+    repo lacks multi-module structure, Ollama is down, or the model can't
+    produce valid questions — design questions never block a quiz.
+    """
+    config = config or Config()
+    system_map = g.module_map(graph)
+    if not system_map or not local.is_ollama_running(config.ollama.url):
+        return []
+    prompt = DESIGN_PROMPT.format(
+        module_map=system_map[: _subgraph_char_budget(config.ollama.num_ctx)],
+        count=count,
+    )
+    for _ in range(2):
+        try:
+            raw = local.call_local(
+                prompt,
+                model=config.model.local,
+                base_url=config.ollama.url,
+                num_ctx=config.ollama.num_ctx,
+            )
+            questions = parse_questions(
+                raw,
+                node_id=DESIGN_NODE_ID,
+                difficulty=difficulty,
+                tier=1,
+                subject=None,
+                snippet=system_map,
+            )
+            for question in questions:
+                question.snippet = system_map
+                question.language = "text"
+            return questions[:count]
+        except ValueError:
+            continue
+    return []
+
+
 def get_questions(
     node: dict,
     graph: nx.DiGraph,

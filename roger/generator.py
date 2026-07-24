@@ -154,13 +154,38 @@ def iter_questions(
 def interleave_questions(
     stream: Iterable[Question], extras: list[Question]
 ) -> Iterator[Question]:
-    """Weave pre-built questions (docs — instant) between streamed ones."""
+    """Weave pre-built questions (docs — instant) between streamed ones.
+
+    Leads with a pre-built question when one exists, so the session's first
+    question appears with zero generation wait.
+    """
     remaining = list(extras)
+    if remaining:
+        yield remaining.pop(0)
     for question in stream:
         yield question
         if remaining:
             yield remaining.pop(0)
     yield from remaining
+
+
+def order_cache_first(
+    node_ids: list[str], graph: nx.DiGraph, difficulty: str
+) -> list[str]:
+    """Order nodes so cache hits come first.
+
+    Cached nodes yield questions instantly; putting them ahead means early
+    questions appear immediately while cold nodes generate in the
+    background during answering.
+    """
+    cached_ids, uncached_ids = [], []
+    for node_id in node_ids:
+        node = g.get_node(graph, node_id)
+        subgraph = g.get_subgraph(graph, node_id, hops=1)
+        entry = get_cached_questions(hash_node(node, subgraph))
+        hit = entry is not None and any(q.difficulty == difficulty for q in entry)
+        (cached_ids if hit else uncached_ids).append(node_id)
+    return cached_ids + uncached_ids
 
 
 def generate_questions(

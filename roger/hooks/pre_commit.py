@@ -16,7 +16,7 @@ from pathlib import Path
 from roger.config import load_config
 from roger.exceptions import GraphNotFoundError, ModelNotRegisteredError, OllamaNotRunningError
 from roger.docs import doc_questions
-from roger.generator import interleave_questions, iter_questions
+from roger.generator import interleave_questions, iter_questions, order_cache_first
 from roger.graph import get_changed_nodes, get_quizzable_nodes, load_graph
 from roger.quiz import QuestionStream, node_display_names, run_quiz
 from roger.storage import record_session, record_skip
@@ -71,6 +71,7 @@ def run_guard() -> None:
     # generates while the developer answers — commit-time waiting shrinks
     # to a single generation.
     code_count = max(0, config.quiz.questions_per_session - len(doc_qs))
+    changed_nodes = order_cache_first(changed_nodes, graph, config.guard.difficulty)
     stream = QuestionStream(
         interleave_questions(
             iter_questions(
