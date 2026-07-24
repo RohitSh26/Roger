@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import queue
 import sys
+import threading
 import time
-from typing import Optional
+from typing import Iterable, Iterator, Optional, Union
 
 from rich.console import Console, Group
 from rich.markup import escape
@@ -34,11 +36,56 @@ def language_for_file(file: str) -> str:
     return _LANGUAGE_BY_EXT.get(file[dot:].lower(), "text") if dot != -1 else "text"
 
 
-def node_display_names(graph, questions: list[Question]) -> dict[str, str]:
-    """Readable 'name (file)' labels for the quiz header and summary."""
+class QuestionStream:
+    """Iterate questions produced on a background thread.
+
+    While the developer answers question N, question N+1 is generated
+    behind the scenes; a small buffer keeps the pipeline a step ahead
+    without generating the whole session up front. Mirrors
+    iter_questions' error contract: a source error surfaces only if
+    nothing was delivered — otherwise the stream simply ends early.
+    """
+
+    _DONE = object()
+
+    def __init__(self, source: Iterable[Question], prefetch: int = 2):
+        self._queue: queue.Queue = queue.Queue(maxsize=max(1, prefetch))
+        self._error: Optional[BaseException] = None
+        self._delivered_any = False
+        self._thread = threading.Thread(target=self._fill, args=(iter(source),), daemon=True)
+        self._thread.start()
+
+    def _fill(self, source: Iterator[Question]) -> None:
+        try:
+            for item in source:
+                self._queue.put(item)
+        except BaseException as exc:  # surfaced on the consumer side
+            self._error = exc
+        finally:
+            self._queue.put(self._DONE)
+
+    def __iter__(self) -> "QuestionStream":
+        return self
+
+    def __next__(self) -> Question:
+        item = self._queue.get()
+        if item is self._DONE:
+            if self._error is not None and not self._delivered_any:
+                raise self._error
+            raise StopIteration
+        self._delivered_any = True
+        return item
+
+
+def node_display_names(graph, questions_or_ids: Iterable) -> dict[str, str]:
+    """Readable 'name (file)' labels for the quiz header and summary.
+
+    Accepts Questions or bare node ids — streaming callers know their node
+    ids before any question exists.
+    """
     names: dict[str, str] = {}
-    for question in questions:
-        node_id = question.node_id
+    for entry in questions_or_ids:
+        node_id = entry.node_id if isinstance(entry, Question) else str(entry)
         if node_id not in graph.nodes:
             continue
         attrs = graph.nodes[node_id]
@@ -153,29 +200,33 @@ def _show_summary(
 
 
 def run_quiz(
-    questions: list[Question],
+    questions: Union[list[Question], Iterable[Question]],
     session_type: str,
     pass_threshold: int = 3,
     module_scope: Optional[str] = None,
     console: Optional[Console] = None,
     node_names: Optional[dict[str, str]] = None,
+    total: Optional[int] = None,
 ) -> QuizResult:
     """Display each question, collect answers, show feedback, return the result.
 
-    node_names maps node ids to human-readable labels for display; ids are
-    still what gets recorded to history.
+    Accepts a list or a (possibly streaming) iterable; pass `total` for the
+    "Question X of N" header when the input has no len(). node_names maps
+    node ids to human-readable labels; ids are what gets recorded.
     """
     console = console or Console()
     node_names = node_names or {}
     answers: list[QuizAnswer] = []
     quiz_start = time.monotonic()
+    if total is None and hasattr(questions, "__len__"):
+        total = len(questions)  # type: ignore[arg-type]
 
     for index, question in enumerate(questions, start=1):
         _show_question(
             console,
             question,
             index,
-            len(questions),
+            total if total is not None else index,
             node_names.get(question.node_id, question.node_id),
         )
         console.print("[dim]Answer (A/B/C/D):[/dim] ", end="")
@@ -197,13 +248,13 @@ def run_quiz(
         _show_feedback(console, question, is_correct, score_answers(answers), len(answers))
 
     score = score_answers(answers)
-    total = len(questions)
+    answered = len(answers)  # a stream may end early; grade what was asked
     result = QuizResult(
         session_type=session_type,
         answers=answers,
         score=score,
-        total=total,
-        passed=has_passed(score, total, pass_threshold),
+        total=answered,
+        passed=has_passed(score, answered, pass_threshold),
         commit_hash=None,
         module_scope=module_scope,
         duration_secs=time.monotonic() - quiz_start,

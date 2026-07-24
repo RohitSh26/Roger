@@ -15,9 +15,9 @@ from pathlib import Path
 
 from roger.config import load_config
 from roger.exceptions import GraphNotFoundError, ModelNotRegisteredError, OllamaNotRunningError
-from roger.generator import generate_questions
+from roger.generator import iter_questions
 from roger.graph import get_changed_nodes, get_quizzable_nodes, load_graph
-from roger.quiz import node_display_names, run_quiz
+from roger.quiz import QuestionStream, node_display_names, run_quiz
 from roger.storage import record_session, record_skip
 
 HOOK_PATH = Path(".git/hooks/pre-commit")
@@ -57,28 +57,33 @@ def run_guard() -> None:
     if not changed_nodes:
         sys.exit(0)
 
-    try:
-        questions = generate_questions(
+    # Stream: the first question appears as soon as it is ready; the next
+    # generates while the developer answers — commit-time waiting shrinks
+    # to a single generation.
+    stream = QuestionStream(
+        iter_questions(
             changed_nodes,
             graph,
             difficulty=config.guard.difficulty,
             count=config.quiz.questions_per_session,
             config=config,
         )
+    )
+    try:
+        result = run_quiz(
+            stream,
+            session_type="guard",
+            pass_threshold=config.quiz.pass_threshold,
+            node_names=node_display_names(graph, changed_nodes),
+            total=config.quiz.questions_per_session,
+        )
     except (OllamaNotRunningError, ModelNotRegisteredError, ValueError) as exc:
         print(exc)
         print("  Skip this quiz once with: ROGER_SKIP=1 git commit ...")
         sys.exit(1)
 
-    if not questions:
+    if result.total == 0:
         sys.exit(0)
-
-    result = run_quiz(
-        questions,
-        session_type="guard",
-        pass_threshold=config.quiz.pass_threshold,
-        node_names=node_display_names(graph, questions),
-    )
     record_session(result)
 
     if result.passed:
