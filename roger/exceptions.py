@@ -23,3 +23,7 @@ class ModelNotRegisteredError(RogerError):
 
 class CacheError(RogerError):
     """A SQLite storage operation (cache.db / history.db) failed."""
+
+
+class CloudBackendError(RogerError):
+    """The optional Azure Foundry Anthropic backend is misconfigured or failed."""

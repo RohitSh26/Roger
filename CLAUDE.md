@@ -16,9 +16,13 @@ Ollama LLM (MiniCPM5-1B) to generate questions. Full details in ROGER_SPEC.md.
 
 ## Decisions Already Made — Do Not Revisit
 
-**No cloud LLM.** Everything runs locally via Ollama. Do not add OpenAI, Anthropic, or
-any other cloud model as a dependency, fallback, or optional integration. If Ollama is
-not running, raise a clear error with setup instructions.
+**Local-first LLM; one sanctioned cloud exception (amended 2026-07-27 by Rohit).**
+The default is fully local via Ollama; if Ollama is not running, raise a clear error
+with setup instructions. The ONLY permitted cloud integration is the opt-in Azure AI
+Foundry Anthropic backend (`[model] provider = "azure-anthropic"`, roger/llm/azure.py):
+key from the AZURE_ANTHROPIC_API_KEY env var only, never from config files; local
+remains the default; the README's privacy note must stay accurate. Do not add any
+other cloud provider, fallback, or auto-switching.
 
 **Graphify is the only graph/parsing layer.** Do not add tree-sitter, AST parsing, or
 any other code parsing. Graphify (pip: `graphifyy`) handles all of that via its own
@@ -127,6 +131,7 @@ full graph. Shuffle all four options before displaying.
   - `GraphNotFoundError`
   - `ModelNotRegisteredError`
   - `CacheError`
+  - `CloudBackendError` (Azure Foundry backend misconfigured/failed)
 - Use `pathlib.Path` not `os.path` for file operations
 - All database connections opened and closed per-function (no persistent connection)
 

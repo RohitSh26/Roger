@@ -14,7 +14,12 @@ import sys
 from pathlib import Path
 
 from roger.config import load_config
-from roger.exceptions import GraphNotFoundError, ModelNotRegisteredError, OllamaNotRunningError
+from roger.exceptions import (
+    CloudBackendError,
+    GraphNotFoundError,
+    ModelNotRegisteredError,
+    OllamaNotRunningError,
+)
 from roger.docs import doc_questions
 from roger.generator import interleave_questions, iter_questions, order_cache_first
 from roger.graph import get_changed_nodes, get_quizzable_nodes, load_graph
@@ -94,7 +99,7 @@ def run_guard() -> None:
             node_names=node_display_names(graph, changed_nodes),
             total=config.quiz.questions_per_session,
         )
-    except (OllamaNotRunningError, ModelNotRegisteredError, ValueError) as exc:
+    except (OllamaNotRunningError, ModelNotRegisteredError, CloudBackendError, ValueError) as exc:
         print(exc)
         print("  Skip this quiz once with: ROGER_SKIP=1 git commit ...")
         sys.exit(1)

@@ -1257,3 +1257,99 @@ def test_parse_questions_rejects_lookup_trivia() -> None:
     questions = router.parse_questions(raw, node_id="n1", difficulty="medium", tier=1)
     assert len(questions) == 1
     assert questions[0].question.startswith("Why does search()")
+
+
+# --- Azure Foundry Anthropic backend (opt-in) ---------------------------------------
+
+
+def _azure_config():
+    from roger.config import Config, ModelConfig
+
+    return Config(
+        model=ModelConfig(
+            provider="azure-anthropic",
+            azure_endpoint="https://acme.services.ai.azure.com/anthropic",
+            azure_deployment="claude-sonnet-5",
+        )
+    )
+
+
+def test_azure_ensure_ready_lists_missing_pieces(monkeypatch: pytest.MonkeyPatch) -> None:
+    from roger.config import Config, ModelConfig
+    from roger.exceptions import CloudBackendError
+    from roger.llm import azure
+
+    monkeypatch.delenv(azure.API_KEY_ENV, raising=False)
+    with pytest.raises(CloudBackendError) as excinfo:
+        azure.ensure_ready(Config(model=ModelConfig(provider="azure-anthropic")))
+    message = str(excinfo.value)
+    assert "azure_endpoint" in message
+    assert "azure_deployment" in message
+    assert azure.API_KEY_ENV in message
+
+
+def test_call_azure_parses_anthropic_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    from roger.llm import azure
+
+    monkeypatch.setenv(azure.API_KEY_ENV, "key-123")
+    sent = {}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        sent.update(url=url, headers=headers, body=json)
+        return FakeResponse(
+            {"content": [{"type": "text", "text": '{"questions": []}'}]}
+        )
+
+    monkeypatch.setattr(azure.requests, "post", fake_post)
+    result = azure.call_azure("prompt text", _azure_config())
+    assert result == {"questions": []}
+    assert sent["url"].endswith("/anthropic/v1/messages")
+    assert sent["headers"]["x-api-key"] == "key-123"
+    assert sent["body"]["model"] == "claude-sonnet-5"
+    assert sent["body"]["messages"][0]["content"] == "prompt text"
+
+
+def test_call_azure_auth_and_deployment_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    from roger.exceptions import CloudBackendError
+    from roger.llm import azure
+
+    monkeypatch.setenv(azure.API_KEY_ENV, "key-123")
+    monkeypatch.setattr(azure.requests, "post", lambda *a, **k: FakeResponse({}, 401))
+    with pytest.raises(CloudBackendError) as excinfo:
+        azure.call_azure("p", _azure_config())
+    assert azure.API_KEY_ENV in str(excinfo.value)
+
+    monkeypatch.setattr(azure.requests, "post", lambda *a, **k: FakeResponse({}, 404))
+    with pytest.raises(CloudBackendError) as excinfo:
+        azure.call_azure("p", _azure_config())
+    assert "claude-sonnet-5" in str(excinfo.value)
+
+
+def test_router_dispatches_to_azure_without_touching_ollama(
+    graph: nx.DiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from roger.llm import azure
+
+    def no_ollama(*args, **kwargs):
+        raise AssertionError("azure provider must never touch Ollama")
+
+    monkeypatch.setattr(local, "is_ollama_running", no_ollama)
+    monkeypatch.setattr(local, "call_local", no_ollama)
+    monkeypatch.setenv(azure.API_KEY_ENV, "key-123")
+
+    scoped_raw = {
+        "questions": [
+            {
+                "question": "Why does this code keep only the best hit per artifact?",
+                "options": {"A": "dedupe", "B": "speed", "C": "memory", "D": "tokens"},
+                "correct": "A",
+                "explanation": "e",
+            }
+        ]
+    }
+    monkeypatch.setattr(azure, "call_azure", lambda prompt, config, **kw: scoped_raw)
+
+    node = get_node(graph, "payments.charge")
+    questions = router.get_questions(node, graph, "medium", 2, config=_azure_config())
+    assert questions
+    assert all(q.tier in (0, 1) for q in questions)

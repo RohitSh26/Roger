@@ -12,8 +12,10 @@ actually understand. Roger intercepts that: it builds a knowledge graph of your 
 generates multiple-choice questions about *your actual code* with a local 1B model, and
 asks them — on demand, or as a pre-commit gate.
 
-Everything runs on your machine. The only network calls Roger makes are to Ollama on
-`localhost:11434`.
+Everything runs on your machine by default — the only network calls are to Ollama on
+`localhost:11434`. Organizations that prefer their approved cloud can opt in, per
+repository, to routing question generation through an Azure AI Foundry Anthropic
+deployment instead (see below); nothing else ever leaves the machine.
 
 ## Requirements
 
@@ -119,6 +121,34 @@ graph before a quiz session or after merging a significant branch.
 
 Planned (not yet built): `roger ask`, `roger chat`, `roger report`, `roger update`,
 `roger status`, and quiz scoping flags (`--module`, `--since`, `--difficulty`, `--count`).
+
+## Azure AI Foundry (Anthropic) — optional enterprise backend
+
+For teams whose approved AI path is their Azure tenant rather than local models,
+Roger can route question generation through a Claude deployment on Azure AI Foundry:
+
+```toml
+# .roger/config.toml
+[model]
+provider = "azure-anthropic"
+azure_endpoint = "https://<your-resource>.services.ai.azure.com/anthropic"
+azure_deployment = "<your-claude-deployment-name>"
+```
+
+```bash
+export AZURE_ANTHROPIC_API_KEY="..."   # environment only — never in config files
+roger quiz
+```
+
+Everything else works identically: same question categories, same validators, same
+caching. With this provider Ollama is not needed at all (`roger init` skips it).
+
+**Privacy — read this before enabling for a team:** with the Azure provider, quiz
+prompts leave the machine for your Azure tenant. Prompts contain source-code
+excerpts, documentation excerpts, and the module map — including staged changes
+when the guard hook runs at commit time. The default (`provider = "ollama"`)
+remains fully local. Constructed questions (docs, cloze answers, mutants) are
+built locally either way.
 
 ## What a session asks
 

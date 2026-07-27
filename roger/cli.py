@@ -21,10 +21,12 @@ from rich.console import Console
 from roger.config import CONFIG_PATH, ROGER_DIR, Config, load_config, write_default_config
 from roger.exceptions import (
     CacheError,
+    CloudBackendError,
     GraphNotFoundError,
     ModelNotRegisteredError,
     OllamaNotRunningError,
 )
+from roger.llm.azure import ensure_ready as azure_ensure_ready
 from roger.docs import doc_questions
 from roger.generator import (
     generate_questions,
@@ -80,8 +82,20 @@ def _ensure_model(config: Config) -> None:
 
     Default model → register from the Modelfile. Custom model → only verify
     it is already pulled: running `ollama create` here would re-point the
-    user's model tag at the MiniCPM base, silently destroying it.
+    user's model tag at the MiniCPM base, silently destroying it. Azure
+    provider → verify configuration; no Ollama involvement at all.
     """
+    if config.model.provider == "azure-anthropic":
+        try:
+            azure_ensure_ready(config)
+        except CloudBackendError as exc:
+            _fail(str(exc))
+        console.print(
+            f"Using Azure Foundry Anthropic deployment "
+            f"'{config.model.azure_deployment}' — prompts leave this machine."
+        )
+        return
+
     if config.model.local == DEFAULT_MODEL:
         modelfile = _ensure_modelfile()
         console.print(
@@ -134,22 +148,22 @@ def init() -> None:
             "  Check graphify's output for errors."
         )
 
-    # 3. Ollama installed?
-    if shutil.which("ollama") is None:
-        _fail(
-            "✗ Roger: Ollama is not installed.\n"
-            "  Install it from: https://ollama.ai"
-        )
-
-    # 4. Ollama running?
-    try:
-        requests.get(config.ollama.url, timeout=2).raise_for_status()
-    except requests.RequestException:
-        _fail(
-            "✗ Roger: Ollama is not running.\n"
-            "  Start it with: ollama serve\n"
-            "  First-time setup: roger init"
-        )
+    # 3+4. Ollama installed and running? (Skipped entirely on the Azure
+    # provider — nothing local to install.)
+    if config.model.provider != "azure-anthropic":
+        if shutil.which("ollama") is None:
+            _fail(
+                "✗ Roger: Ollama is not installed.\n"
+                "  Install it from: https://ollama.ai"
+            )
+        try:
+            requests.get(config.ollama.url, timeout=2).raise_for_status()
+        except requests.RequestException:
+            _fail(
+                "✗ Roger: Ollama is not running.\n"
+                "  Start it with: ollama serve\n"
+                "  First-time setup: roger init"
+            )
 
     # 5. Register the default model, or verify a user-configured one.
     _ensure_model(config)
@@ -166,8 +180,11 @@ def init() -> None:
         f"✓ Graph built: {config.graph.path} "
         f"({graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges)"
     )
-    model_note = " (MiniCPM5-1B)" if config.model.local == DEFAULT_MODEL else " (custom)"
-    console.print(f"✓ Model ready: {config.model.local}{model_note}")
+    if config.model.provider == "azure-anthropic":
+        console.print(f"✓ Model ready: {config.model.azure_deployment} (Azure Foundry)")
+    else:
+        model_note = " (MiniCPM5-1B)" if config.model.local == DEFAULT_MODEL else " (custom)"
+        console.print(f"✓ Model ready: {config.model.local}{model_note}")
     console.print(f"✓ Config: {CONFIG_PATH}")
     console.print()
     console.print("Next steps:")
@@ -254,7 +271,7 @@ def quiz(
             questions = generate_questions(
                 node_ids, graph, difficulty=difficulty, count=code_count, config=config
             )
-        except (OllamaNotRunningError, ModelNotRegisteredError, CacheError, ValueError) as exc:
+        except (OllamaNotRunningError, ModelNotRegisteredError, CacheError, CloudBackendError, ValueError) as exc:
             _fail(str(exc))
             return
         random.shuffle(questions)
@@ -302,7 +319,7 @@ def quiz(
             node_names=names,
             total=count,
         )
-    except (OllamaNotRunningError, ModelNotRegisteredError, CacheError, ValueError) as exc:
+    except (OllamaNotRunningError, ModelNotRegisteredError, CacheError, CloudBackendError, ValueError) as exc:
         _fail(str(exc))
         return
 

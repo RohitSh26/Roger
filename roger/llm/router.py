@@ -10,8 +10,8 @@ import networkx as nx
 
 from roger import graph as g
 from roger.config import Config
-from roger.exceptions import OllamaNotRunningError
-from roger.llm import local
+from roger.exceptions import CloudBackendError, OllamaNotRunningError
+from roger.llm import azure, local
 from roger.models import Question
 from roger.quiz import language_for_file
 from roger.templates import OPTION_KEYS, build_from_graph
@@ -143,6 +143,34 @@ def _cap_list(items: list[str], limit: int = MAX_LISTED_NEIGHBORS) -> str:
     shown = ", ".join(items[:limit])
     hidden = len(items) - limit
     return f"{shown} (+{hidden} more)" if hidden > 0 else shown
+
+
+def _call_model(prompt: str, config: Config) -> dict:
+    """Dispatch one generation request to the configured provider."""
+    if config.model.provider == "azure-anthropic":
+        return azure.call_azure(prompt, config)
+    return local.call_local(
+        prompt,
+        model=config.model.local,
+        base_url=config.ollama.url,
+        num_ctx=config.ollama.num_ctx,
+    )
+
+
+def _ensure_backend(config: Config) -> None:
+    """Raise the provider-appropriate error when generation can't run."""
+    if config.model.provider == "azure-anthropic":
+        azure.ensure_ready(config)
+    elif not local.is_ollama_running(config.ollama.url):
+        raise OllamaNotRunningError(local.OLLAMA_NOT_RUNNING_MSG)
+
+
+def _backend_available(config: Config) -> bool:
+    try:
+        _ensure_backend(config)
+        return True
+    except (CloudBackendError, OllamaNotRunningError):
+        return False
 
 
 def _example_block(name: str, caller_names: list[str], callee_names: list[str]) -> str:
@@ -431,13 +459,11 @@ def build_cloze_question(
     blanked = "\n".join(blanked_lines)
 
     try:
-        raw = local.call_local(
+        raw = _call_model(
             CLOZE_PROMPT.format(file=node.get("file", ""), blanked=blanked, real_line=real_line),
-            model=config.model.local,
-            base_url=config.ollama.url,
-            num_ctx=config.ollama.num_ctx,
+            config,
         )
-    except ValueError:
+    except (ValueError, CloudBackendError):
         return None
 
     # Models answer either {"alternatives": [...]} or a bare JSON list.
@@ -627,7 +653,7 @@ def get_design_questions(
     """
     config = config or Config()
     system_map = g.module_map(graph)
-    if not system_map or not local.is_ollama_running(config.ollama.url):
+    if not system_map or not _backend_available(config):
         return []
     prompt = DESIGN_PROMPT.format(
         module_map=system_map[: _subgraph_char_budget(config.ollama.num_ctx)],
@@ -635,12 +661,7 @@ def get_design_questions(
     )
     for _ in range(2):
         try:
-            raw = local.call_local(
-                prompt,
-                model=config.model.local,
-                base_url=config.ollama.url,
-                num_ctx=config.ollama.num_ctx,
-            )
+            raw = _call_model(prompt, config)
             questions = parse_questions(
                 raw,
                 node_id=DESIGN_NODE_ID,
@@ -653,7 +674,7 @@ def get_design_questions(
                 question.snippet = system_map
                 question.language = "text"
             return questions[:count]
-        except ValueError:
+        except (ValueError, CloudBackendError):
             continue
     return []
 
@@ -677,8 +698,7 @@ def get_questions(
         return build_from_graph(node, graph)
 
     config = config or Config()
-    if not local.is_ollama_running(config.ollama.url):
-        raise OllamaNotRunningError(local.OLLAMA_NOT_RUNNING_MSG)
+    _ensure_backend(config)
 
     # The developer sees exactly what the model sees — a complete block
     # (get_source_snippet ends it with a visible marker if it had to cut).
@@ -706,12 +726,7 @@ def get_questions(
     last_error: Exception = ValueError("no attempts made")
     for _ in range(3):
         try:
-            raw = local.call_local(
-                prompt,
-                model=config.model.local,
-                base_url=config.ollama.url,
-                num_ctx=config.ollama.num_ctx,
-            )
+            raw = _call_model(prompt, config)
             questions = parse_questions(
                 raw,
                 node_id=node["id"],

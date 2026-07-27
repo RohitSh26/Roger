@@ -46,6 +46,13 @@ paths = ["docs", "README.md"]
 @dataclass
 class ModelConfig:
     local: str = "roger-local"
+    # "ollama" (default: fully local) or "azure-anthropic" (opt-in: prompts
+    # — source excerpts, doc excerpts, module maps — leave the machine for
+    # your Azure tenant). The API key comes ONLY from the
+    # AZURE_ANTHROPIC_API_KEY environment variable, never from this file.
+    provider: str = "ollama"
+    azure_endpoint: str = ""    # e.g. https://<resource>.services.ai.azure.com/anthropic
+    azure_deployment: str = ""  # the Claude deployment/model name in Foundry
 
 
 @dataclass
