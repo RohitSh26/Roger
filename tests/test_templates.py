@@ -289,3 +289,13 @@ def test_doc_cloze_blank_is_markdown_safe(docs_repo) -> None:
     for q in questions:
         assert docs.DOC_BLANK in q.snippet       # bracket marker, not an <hr>
         assert "________" not in q.snippet
+
+
+def test_ask_finds_relevant_doc_sections(docs_repo) -> None:
+    from roger import ask
+
+    sections = ask.find_relevant_sections(
+        "what content is served at each evidence level?", paths=["docs"], repo_root=docs_repo
+    )
+    assert sections
+    assert sections[0].file == "docs/contracts.md"

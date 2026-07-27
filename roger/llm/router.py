@@ -157,7 +157,19 @@ def _call_model(prompt: str, config: Config) -> dict:
     )
 
 
-def _ensure_backend(config: Config) -> None:
+def chat_with_model(prompt: str, config: Config) -> str:
+    """Free-text dispatch to the configured provider (roger ask)."""
+    if config.model.provider == "azure-anthropic":
+        return azure.chat_azure(prompt, config)
+    return local.chat_local(
+        prompt,
+        model=config.model.local,
+        base_url=config.ollama.url,
+        num_ctx=config.ollama.num_ctx,
+    )
+
+
+def ensure_backend(config: Config) -> None:
     """Raise the provider-appropriate error when generation can't run."""
     if config.model.provider == "azure-anthropic":
         azure.ensure_ready(config)
@@ -167,7 +179,7 @@ def _ensure_backend(config: Config) -> None:
 
 def _backend_available(config: Config) -> bool:
     try:
-        _ensure_backend(config)
+        ensure_backend(config)
         return True
     except (CloudBackendError, OllamaNotRunningError):
         return False
@@ -698,7 +710,7 @@ def get_questions(
         return build_from_graph(node, graph)
 
     config = config or Config()
-    _ensure_backend(config)
+    ensure_backend(config)
 
     # The developer sees exactly what the model sees — a complete block
     # (get_source_snippet ends it with a visible marker if it had to cut).

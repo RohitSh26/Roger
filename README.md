@@ -115,12 +115,13 @@ graph before a quiz session or after merging a significant branch.
 | `roger quiz -n 10` | Override the session size (default: `questions_per_session` in config) |
 | `roger quiz --web` | Take the quiz in the browser: highlighted code, keyboard shortcuts |
 | `roger record <CODE>` | Record a finished web session (the page shows the code) |
+| `roger ask "…"` | Ask a question about the codebase — answered from graph, source, and docs, with cited sources |
 | `roger guard` | Run the quiz on currently staged files (what the hook runs) |
 | `roger guard install` | Write the pre-commit hook to `.git/hooks/pre-commit` |
 | `roger guard uninstall` | Remove the hook (only if Roger installed it) |
 
-Planned (not yet built): `roger ask`, `roger chat`, `roger report`, `roger update`,
-`roger status`, and quiz scoping flags (`--module`, `--since`, `--difficulty`, `--count`).
+Planned (not yet built): `roger chat`, `roger report`, `roger update`,
+`roger status`, and quiz scoping flags (`--module`, `--since`, `--difficulty`).
 
 ## Azure AI Foundry (Anthropic) — optional enterprise backend
 

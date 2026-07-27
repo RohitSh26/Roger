@@ -48,7 +48,12 @@ def ensure_ready(config: Config) -> None:
 
 
 def call_azure(prompt: str, config: Config, timeout: int = 60) -> dict:
-    """Send one generation request to the Foundry Anthropic endpoint."""
+    """Foundry Anthropic request parsed as JSON (quiz generation)."""
+    return _parse_json_lenient(chat_azure(prompt, config, timeout=timeout))
+
+
+def chat_azure(prompt: str, config: Config, timeout: int = 60) -> str:
+    """Foundry Anthropic request returning the text answer (roger ask)."""
     ensure_ready(config)
     key = os.environ[API_KEY_ENV]
     url = config.model.azure_endpoint.rstrip("/")
@@ -103,4 +108,4 @@ def call_azure(prompt: str, config: Config, timeout: int = 60) -> dict:
     text = "".join(
         block.get("text", "") for block in blocks if isinstance(block, dict)
     )
-    return _parse_json_lenient(strip_thinking(text))
+    return strip_thinking(text)

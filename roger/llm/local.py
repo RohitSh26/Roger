@@ -82,14 +82,26 @@ def call_local(
     timeout: int = 60,
     num_ctx: int | None = None,
 ) -> dict:
-    """Call Ollama, strip thinking blocks, parse JSON response.
+    """Call Ollama and parse the response as JSON (quiz generation)."""
+    return _parse_json_lenient(
+        chat_local(prompt, model=model, base_url=base_url, timeout=timeout, num_ctx=num_ctx)
+    )
+
+
+def chat_local(
+    prompt: str,
+    model: str = DEFAULT_MODEL,
+    base_url: str = OLLAMA_BASE,
+    timeout: int = 60,
+    num_ctx: int | None = None,
+) -> str:
+    """Call Ollama and return the text answer (roger ask).
 
     num_ctx overrides the model's context window per-request, so the
     config value applies to custom models that have no Roger Modelfile.
 
     Raises OllamaNotRunningError if Ollama is not available.
     Raises ModelNotRegisteredError if the model is not registered.
-    Raises ValueError if the response is not valid JSON after stripping.
     """
     payload: dict = {
         "model": model,
@@ -122,9 +134,7 @@ def call_local(
             f"✗ Roger: Ollama request failed (HTTP {resp.status_code}): {str(detail)[:300]}"
         )
 
-    content = resp.json()["message"]["content"]
-    content = strip_thinking(content)
-    return _parse_json_lenient(content)
+    return strip_thinking(resp.json()["message"]["content"])
 
 
 def _parse_json_lenient(content: str) -> dict:

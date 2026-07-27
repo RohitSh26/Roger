@@ -17,6 +17,11 @@ from pathlib import Path
 import requests
 import typer
 from rich.console import Console
+from rich.markdown import Markdown as RichMarkdown
+from rich.markup import escape
+from rich.panel import Panel
+
+from roger.ask import answer_question
 
 from roger.config import CONFIG_PATH, ROGER_DIR, Config, load_config, write_default_config
 from roger.exceptions import (
@@ -345,6 +350,31 @@ def record(code: str) -> None:
         _fail(f"✗ Roger: session graded but history was not saved: {exc}")
     verdict = "passed" if result.passed else "failed"
     console.print(f"✓ Recorded: {result.score}/{result.total} — {verdict}.")
+
+
+@app.command()
+def ask(question: str) -> None:
+    """Ask a question about the codebase — answered from graph, source, and docs."""
+    config = load_config()
+    try:
+        graph = load_graph(config.graph.path)
+    except GraphNotFoundError as exc:
+        _fail(str(exc))
+        return
+
+    with console.status("[dim]Reading the codebase…[/dim]"):
+        try:
+            answer, sources = answer_question(question, graph, config)
+        except (OllamaNotRunningError, ModelNotRegisteredError, CloudBackendError, ValueError) as exc:
+            _fail(str(exc))
+            return
+
+    title = question if len(question) <= 76 else question[:73] + "…"
+    console.print(
+        Panel(RichMarkdown(answer), title=escape(title), title_align="left", border_style="cyan")
+    )
+    if sources:
+        console.print("[dim]Grounded in: " + escape(" · ".join(sources)) + "[/dim]")
 
 
 @guard_app.callback()

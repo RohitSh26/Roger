@@ -1353,3 +1353,58 @@ def test_router_dispatches_to_azure_without_touching_ollama(
     questions = router.get_questions(node, graph, "medium", 2, config=_azure_config())
     assert questions
     assert all(q.tier in (0, 1) for q in questions)
+
+
+# --- roger ask -----------------------------------------------------------------
+
+
+def test_chat_local_returns_text_not_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    content = "<think>reasoning</think>The cache is keyed by a SHA-256 of the code."
+    monkeypatch.setattr(
+        local.requests, "post",
+        lambda *a, **k: FakeResponse({"message": {"content": content}}),
+    )
+    assert local.chat_local("q") == "The cache is keyed by a SHA-256 of the code."
+
+
+def test_ask_finds_relevant_nodes(graph: nx.DiGraph) -> None:
+    from roger import ask
+
+    top = ask.find_relevant_nodes(graph, "What charges the card via the gateway?")
+    assert top and top[0] == "payments.charge"
+
+
+def test_answer_question_grounds_and_cites_sources(
+    graph: nx.DiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from roger import ask
+
+    prompts: list[str] = []
+
+    def fake_chat(prompt: str, config) -> str:
+        prompts.append(prompt)
+        return "It charges the card (src/payments/charge.py)."
+
+    monkeypatch.setattr(ask, "chat_with_model", fake_chat)
+    monkeypatch.setattr(ask, "ensure_backend", lambda config: None)
+
+    answer, sources = ask.answer_question("What charges the card?", graph)
+    assert "charges the card" in answer
+    assert any("payments.charge" in s for s in sources)
+    assert "QUESTION: What charges the card?" in prompts[0]
+    assert "### Code: payments.charge" in prompts[0]
+
+
+def test_answer_question_admits_when_nothing_matches(
+    graph: nx.DiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from roger import ask
+
+    monkeypatch.setattr(ask, "ensure_backend", lambda config: None)
+    monkeypatch.setattr(
+        ask, "chat_with_model",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not call the model")),
+    )
+    answer, sources = ask.answer_question("zzz qqq xyzzy", graph)
+    assert "couldn't find anything" in answer
+    assert sources == []
