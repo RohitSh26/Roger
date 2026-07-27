@@ -55,7 +55,7 @@ from roger.hooks.pre_commit import install_hook, run_guard, uninstall_hook
 from roger.llm.local import DEFAULT_MODEL, MODELFILE_CONTENT
 from roger.quiz import QuestionStream, node_display_names, run_quiz
 from roger.storage import init_dbs, record_session
-from roger.webquiz import record_answer_code, render_quiz_html
+from roger.webquiz import record_answer_code, render_ask_html, render_quiz_html
 
 app = typer.Typer(
     name="roger",
@@ -432,7 +432,12 @@ def use(
 
 
 @app.command()
-def ask(question: str) -> None:
+def ask(
+    question: str,
+    web: bool = typer.Option(
+        False, "--web", help="Render the answer in the browser (markdown, highlighted code)."
+    ),
+) -> None:
     """Ask a question about the codebase — answered from graph, source, and docs."""
     config = _load_config()
     try:
@@ -447,6 +452,12 @@ def ask(question: str) -> None:
         except (OllamaNotRunningError, ModelNotRegisteredError, CloudBackendError, ValueError) as exc:
             _fail(str(exc))
             return
+
+    if web:
+        page = render_ask_html(question, answer, sources)
+        console.print(f"✓ Answer ready: {page}")
+        webbrowser.open(page.resolve().as_uri())
+        return
 
     title = question if len(question) <= 76 else question[:73] + "…"
     console.print(

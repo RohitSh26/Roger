@@ -291,3 +291,29 @@ def test_web_template_renders_markdown_and_mermaid() -> None:
     assert "marked.min.js" in EMBEDDED_TEMPLATE
     assert "mermaid" in EMBEDDED_TEMPLATE
     assert "language-mermaid" in EMBEDDED_TEMPLATE  # fences become diagrams
+
+
+def test_render_ask_html(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from roger import webquiz
+
+    monkeypatch.chdir(tmp_path)
+    page = webquiz.render_ask_html(
+        "Why L0-L3 levels?",
+        "Because **tiers**:\n\n```python\nreturn levels[0]\n```\n\nAlso </script> safe.",
+        ["docs/contracts.md § Levels", "EvidencePackState (state.py)"],
+    )
+    html = page.read_text(encoding="utf-8")
+    assert page.name == "ask.html"
+    assert "Why L0-L3 levels?" in html
+    assert "<\\/script>" in html                  # embed-safe
+    assert "docs/contracts.md § Levels" in html
+    assert "marked.min.js" in html and "mermaid" in html
+
+
+def test_ask_template_file_matches_embedded_copy() -> None:
+    from pathlib import Path
+
+    from roger.webquiz import ASK_EMBEDDED_TEMPLATE
+
+    template = Path(__file__).resolve().parent.parent / "templates" / "ask.html.jinja"
+    assert template.read_text(encoding="utf-8") == ASK_EMBEDDED_TEMPLATE

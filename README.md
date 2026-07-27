@@ -116,6 +116,7 @@ graph before a quiz session or after merging a significant branch.
 | `roger quiz --web` | Take the quiz in the browser: highlighted code, keyboard shortcuts |
 | `roger record <CODE>` | Record a finished web session (the page shows the code) |
 | `roger ask "…"` | Ask a question about the codebase — answered from graph, source, and docs, with cited sources |
+| `roger ask "…" --web` | Same answer rendered in the browser: formatted markdown, highlighted code, diagrams |
 | `roger use azure` / `roger use ollama` | Switch the generation backend — writes config for you, applies to quiz, `--web`, guard, and ask |
 | `roger guard` | Run the quiz on currently staged files (what the hook runs) |
 | `roger guard install` | Write the pre-commit hook to `.git/hooks/pre-commit` |

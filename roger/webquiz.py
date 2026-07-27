@@ -21,6 +21,7 @@ from roger.models import Question, QuizAnswer, QuizResult
 
 ROGER_DIR = Path(".roger")
 QUIZ_HTML_PATH = ROGER_DIR / "quiz.html"
+ASK_HTML_PATH = ROGER_DIR / "ask.html"
 PENDING_PATH = ROGER_DIR / "quiz-pending.json"
 
 _TEMPLATE_DIRS = [
@@ -29,19 +30,19 @@ _TEMPLATE_DIRS = [
 ]
 
 
-def _load_template():
-    # autoescape must stay OFF: the only substitutions are integers and the
-    # question JSON blob, and entity-escaping the blob (< → &lt;) corrupts
-    # it inside <script type="application/json">. Script-tag breakout is
-    # prevented by the "</" → "<\\/" JSON guard instead.
+def _load_template(name: str = "quiz.html.jinja", embedded: Optional[str] = None):
+    # autoescape must stay OFF: the only substitutions are integers and
+    # JSON blobs, and entity-escaping a blob (< → &lt;) corrupts it inside
+    # <script type="application/json">. Script-tag breakout is prevented
+    # by the "</" → "<\\/" JSON guard instead.
     for directory in _TEMPLATE_DIRS:
-        if (directory / "quiz.html.jinja").is_file():
+        if (directory / name).is_file():
             env = Environment(loader=FileSystemLoader(str(directory)), autoescape=False)
-            return env.get_template("quiz.html.jinja")
+            return env.get_template(name)
     from jinja2 import Template
 
     # Wheel installs don't ship templates/ — fall back to the embedded copy.
-    return Template(EMBEDDED_TEMPLATE, autoescape=False)
+    return Template(embedded if embedded is not None else EMBEDDED_TEMPLATE, autoescape=False)
 
 
 def render_quiz_html(
@@ -62,7 +63,7 @@ def render_quiz_html(
     ]
     # "<\\/" keeps any literal </script> inside code snippets from
     # terminating the embedding script tag; it is still valid JSON.
-    questions_json = json.dumps(payload).replace("</", "<\\/")
+    questions_json = json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")
 
     html = _load_template().render(
         questions_json=questions_json,
@@ -132,8 +133,119 @@ def record_answer_code(code: str, pending_path: Path = PENDING_PATH) -> QuizResu
     return result
 
 
-# The full page template also lives at templates/quiz.html.jinja for
-# checkout installs; a test keeps the two copies identical.
+def render_ask_html(
+    question: str,
+    answer_markdown: str,
+    sources: list[str],
+    out_path: Path = ASK_HTML_PATH,
+) -> Path:
+    """Write the rendered answer page for `roger ask --web`."""
+    payload = json.dumps(
+        {"question": question, "answer": answer_markdown, "sources": sources},
+        ensure_ascii=False,
+    ).replace("</", "<\\/")
+    html = _load_template("ask.html.jinja", ASK_EMBEDDED_TEMPLATE).render(ask_json=payload)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(html, encoding="utf-8")
+    return out_path
+
+
+ASK_EMBEDDED_TEMPLATE = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Roger — Ask</title>
+<link rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #0d1117; color: #e6edf3;
+         font: 16px/1.65 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 2.5rem 1.25rem 4rem; }
+  .meta { color: #8b949e; font-size: .85rem; letter-spacing: .02em; }
+  h1 { font-size: 1.25rem; font-weight: 600; margin: .4rem 0 1.6rem;
+       padding-bottom: 1rem; border-bottom: 1px solid #21262d; }
+  .answer h1, .answer h2, .answer h3 { font-size: 1.05rem; margin: 1.1rem 0 .5rem;
+       border: 0; padding: 0; }
+  .answer table { border-collapse: collapse; margin: .6rem 0; }
+  .answer th, .answer td { border: 1px solid #30363d; padding: .35rem .75rem; }
+  .answer code { background: #161b22; padding: .12rem .4rem; border-radius: 4px;
+       font: 13.5px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .answer pre { background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+       padding: .9rem 1.1rem; overflow-x: auto; }
+  .answer pre code { background: transparent; padding: 0; }
+  .answer .mermaid { background: #161b22; border: 1px solid #30363d;
+       border-radius: 8px; padding: 1rem; text-align: center; }
+  .answer blockquote { border-left: 3px solid #30363d; margin: .6rem 0;
+       padding: .1rem 0 .1rem 1rem; color: #8b949e; }
+  .sources { margin-top: 2.2rem; padding-top: 1rem; border-top: 1px solid #21262d; }
+  .sources ul { margin: .4rem 0 0; padding-left: 1.2rem; color: #8b949e;
+       font-size: .9rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="meta">Roger · ask</div>
+  <h1 id="question"></h1>
+  <div class="answer" id="answer"></div>
+  <div class="sources" id="sourcesWrap" style="display:none">
+    <div class="meta">Grounded in</div>
+    <ul id="sources"></ul>
+  </div>
+</div>
+
+<script id="ask-data" type="application/json">{{ ask_json }}</script>
+<script>
+(function () {
+  var data = JSON.parse(document.getElementById("ask-data").textContent);
+  document.getElementById("question").textContent = data.question;
+  document.title = "Roger — " + data.question.slice(0, 60);
+
+  var answer = document.getElementById("answer");
+  if (window.marked) {
+    answer.innerHTML = marked.parse(data.answer);
+    answer.querySelectorAll("pre code").forEach(function (block) {
+      if (block.className.indexOf("language-mermaid") !== -1) {
+        var holder = document.createElement("pre");
+        holder.className = "mermaid";
+        holder.textContent = block.textContent;
+        block.parentNode.replaceWith(holder);
+      } else if (window.hljs) {
+        try { hljs.highlightElement(block); } catch (e) {}
+      }
+    });
+    if (window.mermaid) {
+      mermaid.initialize({ startOnLoad: false, theme: "dark" });
+      try { mermaid.run({ nodes: answer.querySelectorAll(".mermaid") }); } catch (e) {}
+    }
+  } else {
+    var pre = document.createElement("pre");
+    pre.textContent = data.answer;
+    answer.appendChild(pre);
+  }
+
+  if (data.sources && data.sources.length) {
+    document.getElementById("sourcesWrap").style.display = "block";
+    data.sources.forEach(function (source) {
+      var li = document.createElement("li");
+      li.textContent = source;
+      document.getElementById("sources").appendChild(li);
+    });
+  }
+})();
+</script>
+</body>
+</html>
+"""
+
+
+# The full page templates also live under templates/ for checkout installs;
+# tests keep the copies identical.
 EMBEDDED_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
