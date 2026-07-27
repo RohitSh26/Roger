@@ -137,11 +137,13 @@
       el("gutter").textContent = lines.map(function (_, i) { return i + 1; }).join("\n");
       var codeEl = el("snippet");
       codeEl.textContent = q.snippet;
-      codeEl.className = q.language ? "language-" + q.language : "";
+      var lang = q.language && q.language !== "text" ? q.language : "";
+      codeEl.className = lang ? "language-" + lang : "language-plaintext";
       // hljs marks elements it has processed and refuses to re-highlight
-      // them — clear the marker or only question 1 gets colors.
+      // them — clear the marker or only question 1 gets colors. Plain-text
+      // snippets (the design map) skip auto-detection entirely.
       delete codeEl.dataset.highlighted;
-      if (window.hljs) { try { hljs.highlightElement(codeEl); } catch (e) {} }
+      if (window.hljs && lang) { try { hljs.highlightElement(codeEl); } catch (e) {} }
       el("codeBlock").style.display = "flex";
     }
 

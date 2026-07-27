@@ -20,6 +20,27 @@ DEFAULT_DOC_PATHS = ["docs", "README.md"]
 MAX_DOC_FILES = 500
 _SNIPPET_LINES = 18
 
+# Visible in rendered markdown; a bare run of underscores would render as a
+# horizontal rule and the blank would vanish.
+DOC_BLANK = "**[ … blank … ]**"
+
+
+def _md_excerpt(text: str, max_lines: int = _SNIPPET_LINES) -> str:
+    """Cut a markdown excerpt safely for rendering.
+
+    Balances code fences (a cut inside a fence would swallow the rest of
+    the page as code) and marks the cut honestly instead of ending
+    mid-thought.
+    """
+    lines = text.splitlines()
+    kept = lines[:max_lines]
+    if sum(1 for line in kept if line.strip().startswith("```")) % 2 == 1:
+        kept.append("```")
+    if len(lines) > max_lines:
+        kept.append("")
+        kept.append("*… (truncated — the document continues)*")
+    return "\n".join(kept)
+
 # Never quiz on tool configs, vendored trees, or generated agent files.
 _EXCLUDED_SEGMENTS = {"node_modules", "vendor", "dist", "build", "target"}
 
@@ -151,7 +172,7 @@ def adr_questions(
         others = [t for f, t, _ in adrs if t != title]
         if len(others) < 3:
             continue
-        snippet = "\n".join(context.splitlines()[:_SNIPPET_LINES])
+        snippet = _md_excerpt(context)
         questions.append(
             _make_mcq(
                 node_id=file,
@@ -216,9 +237,9 @@ def doc_cloze_questions(
         others = list(dict.fromkeys(others))
         if len(others) < 3:
             continue
-        blanked = section.text.replace(target, "________________________________", 1)
-        snippet = "\n".join(blanked.splitlines()[:_SNIPPET_LINES])
-        if "____" not in snippet:  # the blank fell outside the shown excerpt
+        blanked = section.text.replace(target, DOC_BLANK, 1)
+        snippet = _md_excerpt(blanked)
+        if DOC_BLANK not in snippet:  # the blank fell outside the shown excerpt
             continue
         questions.append(
             _make_mcq(

@@ -254,7 +254,9 @@ def serialize_subgraph(
 
 _LOCATION_RE = re.compile(r"L(\d+)(?:\s*[-–]\s*L?(\d+))?")
 
-TRUNCATION_MARKER = "# … (truncated — the code continues beyond this excerpt)"
+# Must not start with '#': markdown-rendered snippets would show it as a
+# giant heading. Plain ellipsis text renders sanely everywhere.
+TRUNCATION_MARKER = "… (truncated — content continues beyond this excerpt)"
 
 # Extensions where blocks are delimited by braces rather than indentation.
 _BRACE_EXTS = {

@@ -438,3 +438,8 @@ def test_block_extraction_works_across_languages(
     )
     assert must_contain in snippet       # reaches the true end of the block
     assert must_not_contain not in snippet  # stops before the next declaration
+
+
+def test_truncation_marker_is_markdown_safe() -> None:
+    # A '#'-prefixed marker would render as a giant heading in markdown mode.
+    assert not g.TRUNCATION_MARKER.startswith("#")

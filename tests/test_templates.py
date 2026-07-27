@@ -263,3 +263,29 @@ def test_doc_questions_empty_repo_is_silent(tmp_path) -> None:
     from roger import docs
 
     assert docs.doc_questions(count=3, repo_root=tmp_path, rng=random.Random(5)) == []
+
+
+def test_md_excerpt_balances_fences_and_marks_cut() -> None:
+    from roger import docs
+
+    text = "Intro line about the flow.\n```mermaid\nA --> B\nB --> C\n" + "\n".join(
+        f"step {i}" for i in range(30)
+    )
+    excerpt = docs._md_excerpt(text, max_lines=6)
+    assert excerpt.count("```") % 2 == 0          # never cut inside a fence
+    assert "*… (truncated — the document continues)*" in excerpt
+
+
+def test_doc_cloze_blank_is_markdown_safe(docs_repo) -> None:
+    from roger import docs
+
+    files = docs.discover_doc_files(["docs"], repo_root=docs_repo)
+    sections = []
+    for f in files:
+        rel = str(f.relative_to(docs_repo))
+        sections.extend(docs.split_sections(rel, f.read_text(encoding="utf-8")))
+    questions = docs.doc_cloze_questions(sections, "medium", random.Random(6))
+    assert questions
+    for q in questions:
+        assert docs.DOC_BLANK in q.snippet       # bracket marker, not an <hr>
+        assert "________" not in q.snippet

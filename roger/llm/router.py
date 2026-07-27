@@ -380,7 +380,7 @@ def parse_questions(
 
 
 _CLOZE_SKIP_PREFIXES = (
-    "#", "//", "/*", "*", '"""', "'''",
+    "#", "//", "/*", "*", '"""', "'''", "…",  # '…' = the truncation marker
     "def ", "class ", "import ", "from ", "func ", "fn ", "function ",
 )
 
@@ -422,7 +422,12 @@ def build_cloze_question(
     real_line = lines[index]
     indent = real_line[: len(real_line) - len(real_line.lstrip())]
     blanked_lines = [*lines]
-    blanked_lines[index] = f"{indent}________________________________"
+    # In markdown a bare line of underscores renders as a horizontal rule —
+    # the blank would vanish. Use a visible bracket marker there instead.
+    if language_for_file(str(node.get("file") or "")) == "markdown":
+        blanked_lines[index] = f"{indent}**[ … blank … ]**"
+    else:
+        blanked_lines[index] = f"{indent}________________________________"
     blanked = "\n".join(blanked_lines)
 
     try:
