@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.util
 import itertools
+import os
 import random
 import shutil
 import subprocess
@@ -23,7 +24,15 @@ from rich.panel import Panel
 
 from roger.ask import answer_question
 
-from roger.config import CONFIG_PATH, ROGER_DIR, Config, load_config, write_default_config
+from roger.config import (
+    CONFIG_PATH,
+    ROGER_DIR,
+    Config,
+    load_config,
+    normalize_provider,
+    save_config,
+    write_default_config,
+)
 from roger.exceptions import (
     CacheError,
     CloudBackendError,
@@ -31,6 +40,7 @@ from roger.exceptions import (
     ModelNotRegisteredError,
     OllamaNotRunningError,
 )
+from roger.llm.azure import API_KEY_ENV as AZURE_API_KEY_ENV
 from roger.llm.azure import ensure_ready as azure_ensure_ready
 from roger.docs import doc_questions
 from roger.generator import (
@@ -64,6 +74,14 @@ def _fail(message: str) -> None:
     # names, which Rich would otherwise swallow as markup tags.
     err_console.print(str(message), markup=False)
     raise typer.Exit(code=1)
+
+
+def _load_config() -> Config:
+    try:
+        return load_config()
+    except ValueError as exc:
+        _fail(str(exc))
+        raise AssertionError("unreachable")
 
 
 def _ensure_modelfile() -> Path:
@@ -129,7 +147,7 @@ def _ensure_model(config: Config) -> None:
 @app.command()
 def init() -> None:
     """Bootstrap Roger: graphify build, Ollama model registration, config, databases."""
-    config = load_config()
+    config = _load_config()
 
     # 1. graphify installed?
     if importlib.util.find_spec("graphify") is None:
@@ -235,7 +253,7 @@ def quiz(
     ),
 ) -> None:
     """Quiz yourself on this repo (whole repo, config defaults)."""
-    config = load_config()
+    config = _load_config()
     try:
         graph = load_graph(config.graph.path)
     except GraphNotFoundError as exc:
@@ -299,7 +317,15 @@ def quiz(
     # Terminal mode streams: the first question appears as soon as it is
     # ready, and the next one generates while the developer answers. Doc
     # questions (instant) are woven between the streamed code questions.
-    console.print(f"Preparing {count} {difficulty} questions — the rest generate as you answer…")
+    backend = (
+        f"Azure Foundry '{config.model.azure_deployment}'"
+        if config.model.provider == "azure-anthropic"
+        else f"Ollama '{config.model.local}'"
+    )
+    console.print(
+        f"Preparing {count} {difficulty} questions via {backend} — "
+        "the rest generate as you answer…"
+    )
 
     def _design_tail():
         if design_share:
@@ -353,9 +379,62 @@ def record(code: str) -> None:
 
 
 @app.command()
+def use(
+    provider: str = typer.Argument(..., help='Backend: "ollama" or "azure"'),
+    endpoint: str = typer.Option("", "--endpoint", help="Azure Foundry endpoint URL"),
+    deployment: str = typer.Option("", "--deployment", help="Azure Claude deployment name"),
+    model: str = typer.Option("", "--model", help="Ollama model name (e.g. qwen2.5:7b)"),
+) -> None:
+    """Switch the generation backend — no TOML editing required.
+
+    Examples:
+      roger use azure --endpoint https://acme.services.ai.azure.com/anthropic --deployment claude-x
+      roger use ollama --model qwen2.5:7b-instruct-q4_K_M
+      roger use ollama
+    """
+    config = _load_config()
+    try:
+        target = normalize_provider(provider)
+    except ValueError as exc:
+        _fail(str(exc))
+        return
+    config.model.provider = target
+
+    if target == "azure-anthropic":
+        if endpoint:
+            config.model.azure_endpoint = endpoint
+        if deployment:
+            config.model.azure_deployment = deployment
+        if not config.model.azure_endpoint or not config.model.azure_deployment:
+            _fail(
+                "✗ Roger: the Azure backend needs an endpoint and a deployment "
+                "(first time only):\n"
+                "  roger use azure --endpoint https://<resource>.services.ai.azure.com/anthropic "
+                "--deployment <name>"
+            )
+        save_config(config)
+        console.print(
+            f"✓ Backend: Azure Foundry Anthropic — deployment "
+            f"'{config.model.azure_deployment}'. Applies to quiz, quiz --web, guard, and ask."
+        )
+        if not os.environ.get(AZURE_API_KEY_ENV):
+            console.print(
+                f"  One more step: export {AZURE_API_KEY_ENV}=…  (environment only, never in files)"
+            )
+    else:
+        if model:
+            config.model.local = model
+        save_config(config)
+        console.print(
+            f"✓ Backend: Ollama — model '{config.model.local}'. "
+            "Applies to quiz, quiz --web, guard, and ask."
+        )
+
+
+@app.command()
 def ask(question: str) -> None:
     """Ask a question about the codebase — answered from graph, source, and docs."""
-    config = load_config()
+    config = _load_config()
     try:
         graph = load_graph(config.graph.path)
     except GraphNotFoundError as exc:

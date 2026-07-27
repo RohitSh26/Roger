@@ -134,3 +134,72 @@ def test_history_limit() -> None:
     for _ in range(5):
         storage.record_session(_make_result())
     assert len(storage.get_history(limit=3)) == 3
+
+
+# --- config: provider normalization and misconfiguration surfacing -----------------
+
+
+def test_provider_aliases_normalize(tmp_path) -> None:
+    from pathlib import Path
+
+    from roger.config import load_config
+
+    for raw in ("azure", "Azure-Anthropic", "azure_anthropic", "FOUNDRY"):
+        cfg_path = tmp_path / f"{raw.lower()}.toml"
+        cfg_path.write_text(f'[model]\nprovider = "{raw}"\n', encoding="utf-8")
+        assert load_config(Path(cfg_path)).model.provider == "azure-anthropic", raw
+    ollama_path = tmp_path / "ollama.toml"
+    ollama_path.write_text('[model]\nprovider = "local"\n', encoding="utf-8")
+    assert load_config(Path(ollama_path)).model.provider == "ollama"
+
+
+def test_unknown_provider_is_a_hard_error(tmp_path) -> None:
+    from pathlib import Path
+
+    from roger.config import load_config
+
+    cfg = tmp_path / "bad.toml"
+    cfg.write_text('[model]\nprovider = "azurr"\n', encoding="utf-8")
+    with pytest.raises(ValueError) as excinfo:
+        load_config(Path(cfg))
+    assert "azurr" in str(excinfo.value)
+    assert "azure-anthropic" in str(excinfo.value)
+
+
+def test_misplaced_keys_warn_instead_of_vanishing(tmp_path, capsys) -> None:
+    from pathlib import Path
+
+    from roger.config import load_config
+
+    cfg = tmp_path / "misplaced.toml"
+    cfg.write_text(
+        'provider = "azure-anthropic"\n\n[ollama]\nazure_endpoint = "https://x"\n',
+        encoding="utf-8",
+    )
+    config = load_config(Path(cfg))
+    err = capsys.readouterr().err
+    assert "did you mean to put it under [model]?" in err
+    assert "belongs under [model]" in err
+    assert config.model.provider == "ollama"  # defaults, but loudly
+
+
+def test_save_config_roundtrips_azure_settings(tmp_path) -> None:
+    from pathlib import Path
+
+    from roger.config import Config, ModelConfig, load_config, save_config
+
+    config = Config(
+        model=ModelConfig(
+            provider="azure-anthropic",
+            azure_endpoint="https://acme.services.ai.azure.com/anthropic",
+            azure_deployment="claude-x",
+        )
+    )
+    path = Path(tmp_path / "config.toml")
+    save_config(config, path)
+    loaded = load_config(path)
+    assert loaded.model.provider == "azure-anthropic"
+    assert loaded.model.azure_endpoint == "https://acme.services.ai.azure.com/anthropic"
+    assert loaded.model.azure_deployment == "claude-x"
+    assert loaded.quiz.questions_per_session == 5     # untouched sections survive
+    assert loaded.docs.paths == ["docs", "README.md"]  # lists round-trip

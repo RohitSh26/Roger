@@ -97,28 +97,113 @@ class Config:
     docs: DocsConfig = field(default_factory=DocsConfig)
 
 
-def _merge_section(section_cls: type, data: dict[str, Any]) -> Any:
-    """Build a section dataclass from TOML data, ignoring unknown keys."""
+# Accepted spellings for [model].provider. Anything NOT here is a hard
+# error: silently defaulting to ollama on a typo sent code to the wrong
+# backend with zero feedback.
+_PROVIDER_ALIASES = {
+    "ollama": "ollama",
+    "local": "ollama",
+    "azure": "azure-anthropic",
+    "azure-anthropic": "azure-anthropic",
+    "azure_anthropic": "azure-anthropic",
+    "azureanthropic": "azure-anthropic",
+    "azure-foundry": "azure-anthropic",
+    "azure_foundry": "azure-anthropic",
+    "foundry": "azure-anthropic",
+    "anthropic": "azure-anthropic",
+}
+
+
+def _normalize_provider(raw: Any) -> str:
+    key = str(raw).strip().lower().replace(" ", "")
+    if key in _PROVIDER_ALIASES:
+        return _PROVIDER_ALIASES[key]
+    raise ValueError(
+        f"✗ Roger: unknown model provider {raw!r} in .roger/config.toml.\n"
+        '  Valid values under [model]: provider = "ollama" (default, local)\n'
+        '  or provider = "azure-anthropic".'
+    )
+
+
+def _warn(message: str) -> None:
+    print(f"⚠ Roger: config.toml: {message}", file=sys.stderr)
+
+
+def _merge_section(section_cls: type, name: str, data: dict[str, Any]) -> Any:
+    """Build a section dataclass from TOML data, warning on unknown keys."""
     known = {f.name for f in fields(section_cls)}
-    kwargs = {k: v for k, v in data.items() if k in known}
+    model_keys = {f.name for f in fields(ModelConfig)}
+    kwargs = {}
+    for key, value in data.items():
+        if key in known:
+            kwargs[key] = value
+        elif key in model_keys and name != "model":
+            _warn(f"'{key}' under [{name}] belongs under [model]; ignored")
+        else:
+            _warn(f"'{key}' under [{name}] is not a recognized setting; ignored")
     return section_cls(**kwargs)
 
 
 def load_config(path: Path = CONFIG_PATH) -> Config:
-    """Load from .roger/config.toml if it exists, else return defaults."""
+    """Load from .roger/config.toml if it exists, else return defaults.
+
+    Raises ValueError (with a fix-it message) for settings that would
+    silently change behavior if misread — e.g. an unknown provider.
+    """
     if not path.exists():
         return Config()
 
     with path.open("rb") as f:
         data = tomllib.load(f)
 
+    section_names = {f.name for f in fields(Config)}
+    model_keys = {f.name for f in fields(ModelConfig)}
     kwargs: dict[str, Any] = {}
+    for key, value in data.items():
+        if key not in section_names:
+            hint = " — did you mean to put it under [model]?" if key in model_keys else ""
+            _warn(f"top-level key '{key}' is not a section{hint}; ignored")
     for f_ in fields(Config):
         section = data.get(f_.name)
         section_cls = f_.default_factory  # each section default_factory is its class
         if isinstance(section, dict) and is_dataclass(section_cls):
-            kwargs[f_.name] = _merge_section(section_cls, section)
-    return Config(**kwargs)
+            kwargs[f_.name] = _merge_section(section_cls, f_.name, section)
+
+    config = Config(**kwargs)
+    config.model.provider = _normalize_provider(config.model.provider)
+    return config
+
+
+def save_config(config: Config, path: Path = CONFIG_PATH) -> None:
+    """Write the full config back to TOML (used by `roger use`).
+
+    Regenerates the file from the dataclasses — hand-written comments are
+    not preserved, which is the price of never asking developers to edit
+    TOML by hand for backend switches.
+    """
+    lines = []
+    for section_field in fields(Config):
+        section = getattr(config, section_field.name)
+        lines.append(f"[{section_field.name}]")
+        for f_ in fields(type(section)):
+            value = getattr(section, f_.name)
+            if isinstance(value, bool):
+                rendered = "true" if value else "false"
+            elif isinstance(value, (int, float)):
+                rendered = str(value)
+            elif isinstance(value, list):
+                rendered = "[" + ", ".join(f'"{v}"' for v in value) + "]"
+            else:
+                rendered = f'"{value}"'
+            lines.append(f"{f_.name} = {rendered}")
+        lines.append("")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def normalize_provider(raw: Any) -> str:
+    """Public alias — `roger use` validates its argument with this."""
+    return _normalize_provider(raw)
 
 
 def write_default_config(path: Path = CONFIG_PATH) -> None:

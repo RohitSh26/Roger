@@ -116,6 +116,7 @@ graph before a quiz session or after merging a significant branch.
 | `roger quiz --web` | Take the quiz in the browser: highlighted code, keyboard shortcuts |
 | `roger record <CODE>` | Record a finished web session (the page shows the code) |
 | `roger ask "…"` | Ask a question about the codebase — answered from graph, source, and docs, with cited sources |
+| `roger use azure` / `roger use ollama` | Switch the generation backend — writes config for you, applies to quiz, `--web`, guard, and ask |
 | `roger guard` | Run the quiz on currently staged files (what the hook runs) |
 | `roger guard install` | Write the pre-commit hook to `.git/hooks/pre-commit` |
 | `roger guard uninstall` | Remove the hook (only if Roger installed it) |
@@ -128,18 +129,18 @@ Planned (not yet built): `roger chat`, `roger report`, `roger update`,
 For teams whose approved AI path is their Azure tenant rather than local models,
 Roger can route question generation through a Claude deployment on Azure AI Foundry:
 
-```toml
-# .roger/config.toml
-[model]
-provider = "azure-anthropic"
-azure_endpoint = "https://<your-resource>.services.ai.azure.com/anthropic"
-azure_deployment = "<your-claude-deployment-name>"
+```bash
+roger use azure \
+  --endpoint https://<your-resource>.services.ai.azure.com/anthropic \
+  --deployment <your-claude-deployment-name>
+export AZURE_ANTHROPIC_API_KEY="..."   # environment only — never in config files
+roger quiz            # or quiz --web, guard, ask — same backend everywhere
 ```
 
-```bash
-export AZURE_ANTHROPIC_API_KEY="..."   # environment only — never in config files
-roger quiz
-```
+Switch back anytime with `roger use ollama` (your Azure settings are kept for the
+next switch). Both commands write `.roger/config.toml` for you; if you edit it by
+hand instead, misspelled providers are a hard error and misplaced keys warn —
+nothing falls back silently.
 
 Everything else works identically: same question categories, same validators, same
 caching. With this provider Ollama is not needed at all (`roger init` skips it).

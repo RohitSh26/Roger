@@ -40,7 +40,12 @@ def run_guard() -> None:
         _log_skip(reason="ROGER_SKIP env var")
         sys.exit(0)
 
-    config = load_config()
+    try:
+        config = load_config()
+    except ValueError as exc:
+        print(exc)
+        print("  Fix .roger/config.toml, or skip once with: ROGER_SKIP=1 git commit ...")
+        sys.exit(1)
     if not config.guard.enabled:
         sys.exit(0)
 
