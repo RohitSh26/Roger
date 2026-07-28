@@ -120,6 +120,16 @@ full graph. Shuffle all four options before displaying.
 
 ---
 
+## The Simplicity Doctrine (added 2026-07-28 by Rohit)
+
+If a feature requires the developer to remember a command or read a doc before
+it delivers value, it isn't finished. Roger does X itself only when X is local,
+idempotent, confined to `.roger/` and `graphify-out/`, involves no download,
+and either finishes in seconds or shows progress; anything else is a
+one-keypress confirm. Never auto-download models, never start daemons, never
+pass --force on the user's behalf without an explicit interactive confirmation,
+and always scrub GRAPHIFY_FORCE from child environments.
+
 ## Code Style
 
 - Type hints on all function signatures

@@ -12,8 +12,10 @@ import os
 import random
 import shutil
 import subprocess
+import sys
 import webbrowser
 from pathlib import Path
+from typing import Optional
 
 import requests
 import typer
@@ -43,11 +45,12 @@ from roger.exceptions import (
 from roger.llm.azure import API_KEY_ENV as AZURE_API_KEY_ENV
 from roger.llm.azure import ensure_ready as azure_ensure_ready
 from roger.docs import doc_questions
+from roger import freshness
+from roger.freshness import is_source_file
 from roger.generator import (
     generate_questions,
     interleave_questions,
     iter_questions,
-    order_cache_first,
 )
 from roger.llm.router import DESIGN_NODE_ID, get_design_questions
 from roger.graph import get_god_nodes, get_quizzable_nodes, load_graph
@@ -60,10 +63,21 @@ from roger.webquiz import record_answer_code, render_ask_html, render_quiz_html
 app = typer.Typer(
     name="roger",
     help="Quiz yourself on your own codebase before you commit.",
-    no_args_is_help=True,
 )
 guard_app = typer.Typer(help="Pre-commit quiz guard.", invoke_without_command=True)
 app.add_typer(guard_app, name="guard")
+
+
+@app.callback(invoke_without_command=True)
+def _main(ctx: typer.Context) -> None:
+    if ctx.invoked_subcommand is not None:
+        return
+    # TTY gate: scripts, pipes, and CI keep today's exact behavior
+    # (help + exit 2). The one-word experience exists only for humans.
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        typer.echo(ctx.get_help())
+        raise typer.Exit(code=2)
+    _default_flow()
 
 console = Console()
 err_console = Console(stderr=True)
@@ -82,6 +96,51 @@ def _load_config() -> Config:
     except ValueError as exc:
         _fail(str(exc))
         raise AssertionError("unreachable")
+
+
+def _anchor_repo_root() -> Optional[Path]:
+    """Run from the repo root regardless of cwd — every Roger path
+    (.roger/, graphify-out/) is repo-relative, and a quiz started from
+    src/utils/ must not create a second Roger world there."""
+    top = freshness.repo_root()
+    if top is not None and top != Path.cwd():
+        os.chdir(top)
+    return top
+
+
+def _default_flow() -> None:
+    """Bare `roger`: the whole product behind one word."""
+    top = _anchor_repo_root()
+    if top is None:
+        _fail("✗ Roger quizzes you on a git repository — cd into one and run 'roger'.")
+        return
+    config = _load_config()
+    if not Path(config.graph.path).exists():
+        _offer_setup(top, config)
+    quiz(web=False, count=0)
+
+
+def _offer_setup(top: Path, config: Config) -> None:
+    """First run: one keypress, full honesty about size and downloads."""
+    notes = []
+    listed = subprocess.run(
+        ["git", "ls-files"], capture_output=True, text=True, check=False
+    ).stdout.splitlines()
+    source_count = sum(1 for f in listed if is_source_file(f))
+    if source_count > 5_000:
+        notes.append(
+            f"large repo (~{source_count:,} source files) — the first index may take several minutes"
+        )
+    if config.model.provider != "azure-anthropic" and config.model.local == DEFAULT_MODEL:
+        registered = subprocess.run(
+            ["ollama", "show", DEFAULT_MODEL], capture_output=True, check=False
+        ).returncode == 0
+        if not registered:
+            notes.append("downloads the ~1.15 GB local model if not already cached")
+    detail = f" ({'; '.join(notes)})" if notes else ""
+    if not typer.confirm(f"First time here — set up Roger for '{top.name}'?{detail}", default=True):
+        raise typer.Exit(code=0)
+    _run_init(config)
 
 
 def _ensure_modelfile() -> Path:
@@ -146,9 +205,12 @@ def _ensure_model(config: Config) -> None:
 
 @app.command()
 def init() -> None:
-    """Bootstrap Roger: graphify build, Ollama model registration, config, databases."""
-    config = _load_config()
+    """Bootstrap Roger: graphify build, model registration, config, databases."""
+    _anchor_repo_root()
+    _run_init(_load_config())
 
+
+def _run_init(config: Config) -> None:
     # 1. graphify installed?
     if importlib.util.find_spec("graphify") is None:
         _fail(
@@ -161,7 +223,7 @@ def init() -> None:
     #    local-only constraint forbids.
     console.print("Building knowledge graph with graphify…")
     try:
-        subprocess.run(["graphify", "./", "--code-only"], check=True)
+        subprocess.run([freshness.graphify_executable(), "./", "--code-only"], check=True)
     except (subprocess.CalledProcessError, FileNotFoundError) as exc:
         _fail(f"✗ Roger: graphify failed: {exc}")
     graph_path = Path(config.graph.path)
@@ -253,6 +315,7 @@ def quiz(
     ),
 ) -> None:
     """Quiz yourself on this repo (whole repo, config defaults)."""
+    _anchor_repo_root()
     config = _load_config()
     try:
         graph = load_graph(config.graph.path)
@@ -262,6 +325,14 @@ def quiz(
 
     if graph.number_of_nodes() == 0:
         _fail("✗ Roger: the knowledge graph is empty. Rebuild it with: roger init")
+
+    # Self-freshening: if source changed since the graph was built, refresh
+    # in the background while this session runs on the loaded graph. A
+    # previously failed refresh surfaces as exactly one line, once.
+    failure_note = freshness.pending_failure_note(config.graph.path)
+    if failure_note:
+        console.print(f"[dim]{failure_note}[/dim]")
+    freshness.maybe_refresh_in_background(config.graph.path)
 
     # Session size: --count flag wins, else the config value — the
     # docs/code/design split below scales automatically from it.
@@ -279,11 +350,8 @@ def quiz(
     )
     design_share = 1 if count >= 4 else 0
     code_count = max(1, count - len(doc_qs) - design_share)
-    node_ids = order_cache_first(
-        _pick_quiz_nodes(graph, code_count, config.graph.god_node_weight),
-        graph,
-        difficulty,
-    )
+    # iter_questions orders cache-hits first internally.
+    node_ids = _pick_quiz_nodes(graph, code_count, config.graph.god_node_weight)
     names = node_display_names(graph, node_ids)
     names[DESIGN_NODE_ID] = "system design (module map)"
 
@@ -356,6 +424,7 @@ def quiz(
 
     if result.total == 0:
         _fail("✗ Roger: could not generate any questions for this repo.")
+    result.commit_hash = freshness.head_commit()
     try:
         record_session(result)
     except CacheError as exc:
@@ -365,17 +434,62 @@ def quiz(
 @app.command()
 def record(code: str) -> None:
     """Record a finished web quiz session (the page shows the answer code)."""
+    _anchor_repo_root()
     try:
         result = record_answer_code(code)
     except ValueError as exc:
         _fail(f"✗ Roger: {exc}")
         return
+    result.commit_hash = freshness.head_commit()
     try:
         record_session(result)
     except CacheError as exc:
         _fail(f"✗ Roger: session graded but history was not saved: {exc}")
     verdict = "passed" if result.passed else "failed"
     console.print(f"✓ Recorded: {result.score}/{result.total} — {verdict}.")
+
+
+@app.command()
+def update(
+    background: bool = typer.Option(False, "--background", hidden=True),
+) -> None:
+    """Refresh the knowledge graph from the current code (fast, no LLM)."""
+    _anchor_repo_root()
+    config = _load_config()
+    if not freshness.acquire_lock():
+        if background:
+            raise typer.Exit(code=0)
+        _fail("✗ Roger: a graph update is already running — try again in a moment.")
+    try:
+        result = freshness.run_update(config.graph.path)
+        if background:
+            return
+        if result.outcome == "ok":
+            delta = result.nodes_after - result.nodes_before
+            console.print(
+                f"✓ Graph updated in {result.duration_secs:.0f}s — "
+                f"{result.nodes_after:,} nodes ({'+' if delta >= 0 else ''}{delta:,})."
+            )
+        elif result.outcome == "shrink_refused":
+            # The ONE verb finishes its own job: explain, confirm, rebuild —
+            # never send the user to another tool's --force flag.
+            console.print(
+                "The index refused to shrink — code was deleted since the last "
+                "build (protection against a bad parse wiping the graph)."
+            )
+            if typer.confirm("Rebuild the graph to match the current code?", default=True):
+                result = freshness.run_update(config.graph.path, force=True)
+                if result.outcome == "ok":
+                    console.print(
+                        f"✓ Graph rebuilt in {result.duration_secs:.0f}s — "
+                        f"{result.nodes_after:,} nodes."
+                    )
+                else:
+                    _fail(f"✗ Roger: rebuild failed:\n{result.detail}")
+        else:
+            _fail(f"✗ Roger: graph update failed:\n{result.detail}")
+    finally:
+        freshness.release_lock()
 
 
 @app.command()
@@ -392,6 +506,7 @@ def use(
       roger use ollama --model qwen2.5:7b-instruct-q4_K_M
       roger use ollama
     """
+    _anchor_repo_root()
     config = _load_config()
     try:
         target = normalize_provider(provider)
@@ -439,6 +554,7 @@ def ask(
     ),
 ) -> None:
     """Ask a question about the codebase — answered from graph, source, and docs."""
+    _anchor_repo_root()
     config = _load_config()
     try:
         graph = load_graph(config.graph.path)

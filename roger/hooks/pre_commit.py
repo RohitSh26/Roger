@@ -11,6 +11,7 @@ import os
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from roger.config import load_config
@@ -20,13 +21,28 @@ from roger.exceptions import (
     ModelNotRegisteredError,
     OllamaNotRunningError,
 )
+from roger import freshness
 from roger.docs import doc_questions
-from roger.generator import interleave_questions, iter_questions, order_cache_first
-from roger.graph import get_changed_nodes, get_quizzable_nodes, load_graph
+from roger.freshness import is_source_file
+from roger.generator import interleave_questions, iter_questions
+from roger.graph import _normalize_path, get_changed_nodes, get_quizzable_nodes, load_graph
 from roger.quiz import QuestionStream, node_display_names, run_quiz
 from roger.storage import record_session, record_skip
 
 HOOK_PATH = Path(".git/hooks/pre-commit")
+
+
+def uncovered_source_files(staged_files: list[str], graph) -> list[str]:
+    """Staged source files with no node in the graph — invisible to the quiz."""
+    graph_files = {
+        _normalize_path(str(attrs.get("file") or ""))
+        for _, attrs in graph.nodes(data=True)
+    }
+    return [
+        f
+        for f in staged_files
+        if is_source_file(f) and _normalize_path(f) not in graph_files
+    ]
 HOOK_MARKER = "# installed by roger"
 HOOK_SCRIPT = f"""#!/bin/sh
 {HOOK_MARKER}
@@ -56,9 +72,19 @@ def run_guard() -> None:
     try:
         graph = load_graph(config.graph.path)
     except GraphNotFoundError as exc:
-        # Roger isn't set up in this repo — warn but never block the commit.
-        print(exc)
-        sys.exit(0)
+        if freshness.lock_held():
+            # A background refresh may be mid-write — retry once rather than
+            # letting it silently disable the gate with a misleading error.
+            time.sleep(2)
+            try:
+                graph = load_graph(config.graph.path)
+            except GraphNotFoundError:
+                print("Roger: graph refresh in progress — guard skipped this once.")
+                sys.exit(0)
+        else:
+            # Roger isn't set up in this repo — warn but never block the commit.
+            print(exc)
+            sys.exit(0)
 
     changed_nodes = get_changed_nodes(graph, staged_files)
     # Tests stay in scope for guard (the developer changed them), but doc
@@ -74,6 +100,22 @@ def run_guard() -> None:
         if staged_docs and config.docs.enabled
         else []
     )
+    # Staged source files the graph has never seen: the newest code, which
+    # is exactly what guard exists to check. Silent passes hide that; say it.
+    uncovered = uncovered_source_files(staged_files, graph)
+    if uncovered and not changed_nodes:
+        duration = freshness.last_update_duration()
+        estimate = f" (~{duration:.0f}s)" if duration else ""
+        print(
+            f"⚠ Roger: {len(uncovered)} staged source file(s) aren't in the "
+            f"knowledge graph yet — run 'roger update'{estimate} to include them."
+        )
+        if config.guard.require_coverage:
+            print("  Blocking: [guard] require_coverage = true in .roger/config.toml.")
+            sys.exit(1)
+        if not doc_qs:
+            sys.exit(0)
+
     if not changed_nodes and not doc_qs:
         sys.exit(0)
 
@@ -81,7 +123,6 @@ def run_guard() -> None:
     # generates while the developer answers — commit-time waiting shrinks
     # to a single generation.
     code_count = max(0, config.quiz.questions_per_session - len(doc_qs))
-    changed_nodes = order_cache_first(changed_nodes, graph, config.guard.difficulty)
     stream = QuestionStream(
         interleave_questions(
             iter_questions(
@@ -111,6 +152,7 @@ def run_guard() -> None:
 
     if result.total == 0:
         sys.exit(0)
+    result.commit_hash = freshness.head_commit()  # the parent of the commit being made
     record_session(result)
 
     if result.passed:
@@ -141,28 +183,45 @@ def _log_skip(reason: str) -> None:
     record_skip(reason=reason, session_type="guard")
 
 
-def install_hook(hook_path: Path = HOOK_PATH) -> None:
-    """Write the hook script to .git/hooks/pre-commit and chmod +x."""
-    git_dir = hook_path.parent.parent
-    if not git_dir.exists():
+def _resolved_hooks_dir() -> Path:
+    """The real hooks dir: honors worktrees and core.hooksPath."""
+    proc = subprocess.run(
+        ["git", "rev-parse", "--git-path", "hooks"],
+        capture_output=True, text=True, check=False,
+    )
+    if proc.returncode != 0:
         raise FileNotFoundError(
-            "No .git directory found — run 'roger guard install' from the repo root."
+            "Not inside a git repository — cd into one and run 'roger guard install'."
         )
+    return (Path.cwd() / proc.stdout.strip()).resolve()
+
+
+def install_hook(hook_path: Path | None = None) -> None:
+    """Write the pre-commit hook and chmod +x (worktree/core.hooksPath aware)."""
+    if hook_path is None:
+        hook_path = _resolved_hooks_dir() / "pre-commit"
     if hook_path.exists() and HOOK_MARKER not in hook_path.read_text(encoding="utf-8"):
+        manager = subprocess.run(
+            ["git", "config", "core.hooksPath"],
+            capture_output=True, text=True, check=False,
+        ).stdout.strip()
+        managed = f" (managed hooks directory: core.hooksPath={manager})" if manager else ""
         raise FileExistsError(
-            f"A pre-commit hook not installed by Roger already exists at {hook_path}. "
-            "Remove or merge it manually, then re-run 'roger guard install'."
+            f"A pre-commit hook not installed by Roger already exists at "
+            f"{hook_path}{managed}. Add 'roger guard' to it manually, then rerun."
         )
     hook_path.parent.mkdir(parents=True, exist_ok=True)
     hook_path.write_text(HOOK_SCRIPT, encoding="utf-8")
     hook_path.chmod(hook_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
-def uninstall_hook(hook_path: Path = HOOK_PATH) -> bool:
-    """Remove .git/hooks/pre-commit if it was installed by Roger.
+def uninstall_hook(hook_path: Path | None = None) -> bool:
+    """Remove the pre-commit hook if it was installed by Roger.
 
     Returns True if a Roger hook was removed, False if none was found.
     """
+    if hook_path is None:
+        hook_path = _resolved_hooks_dir() / "pre-commit"
     if not hook_path.exists():
         return False
     if HOOK_MARKER not in hook_path.read_text(encoding="utf-8"):

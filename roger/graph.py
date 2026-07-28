@@ -224,15 +224,15 @@ def serialize_subgraph(
             dst_name = str(subgraph.nodes[dst].get("display") or dst)
             lines.append(f"  {src_name} {relation} {dst_name}")
     else:
+        # The id-based form feeds the cache hash: no community field —
+        # Leiden ids renumber on every re-cluster and would churn keys
+        # for untouched code.
         for node_id in sorted(subgraph.nodes):
             attrs = subgraph.nodes[node_id]
             desc = attrs.get("description", "")
             file = attrs.get("file", "")
-            community = attrs.get("community", "")
             returns = attrs.get("returns", "")
-            lines.append(
-                f"- {node_id} [file={file} community={community} returns={returns}] {desc}"
-            )
+            lines.append(f"- {node_id} [file={file} returns={returns}] {desc}")
         for src, dst in sorted(subgraph.edges):
             lines.append(f"  {src} -> {dst}")
 

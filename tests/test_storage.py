@@ -203,3 +203,99 @@ def test_save_config_roundtrips_azure_settings(tmp_path) -> None:
     assert loaded.model.azure_deployment == "claude-x"
     assert loaded.quiz.questions_per_session == 5     # untouched sections survive
     assert loaded.docs.paths == ["docs", "README.md"]  # lists round-trip
+
+
+# --- freshness: locks, state memory, safe updates ----------------------------------
+
+
+def test_is_source_file() -> None:
+    from roger import freshness
+
+    assert freshness.is_source_file("src/app/main.py")
+    assert freshness.is_source_file("pkg/broker.GO".lower())
+    assert not freshness.is_source_file("docs/adr/0001.md")
+    assert not freshness.is_source_file("Makefile")
+
+
+def test_lock_lifecycle_and_stale_break() -> None:
+    import json
+    import time
+
+    from roger import freshness
+
+    assert freshness.acquire_lock()
+    assert freshness.lock_held()
+    assert not freshness.acquire_lock()   # second writer skips
+    freshness.release_lock()
+    assert not freshness.lock_held()
+
+    # Dead-pid lock is stale and gets broken.
+    freshness.LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    freshness.LOCK_PATH.write_text(json.dumps({"pid": 99999999, "started": time.time()}))
+    assert not freshness.lock_held()
+    assert freshness.acquire_lock()
+    freshness.release_lock()
+
+
+def test_failure_memory_never_respawns_and_surfaces_once(monkeypatch) -> None:
+    from roger import freshness
+
+    monkeypatch.setattr(freshness, "repo_fingerprint", lambda p: "fp1")
+    monkeypatch.setattr(freshness, "stale_source_files", lambda p: ["a.py"])
+    freshness.write_state(
+        {"fingerprint": "fp1", "outcome": "shrink_refused", "surfaced": False}
+    )
+
+    assert freshness.maybe_refresh_in_background("graph.json") is False  # doomed → no respawn
+    note = freshness.pending_failure_note("graph.json")
+    assert note is not None and "roger update" in note
+    assert freshness.pending_failure_note("graph.json") is None  # once, not nagging
+
+
+def test_run_update_scrubs_force_env_and_detects_shrink(monkeypatch) -> None:
+
+    from roger import freshness
+
+    monkeypatch.setenv("GRAPHIFY_FORCE", "1")
+    seen = {}
+
+    class FakeProc:
+        returncode = 0
+        stdout = "refusing to shrink graph; pass --force to override"
+        stderr = ""
+
+    def fake_run(cmd, capture_output, text, check, env):
+        seen["cmd"] = cmd
+        seen["env"] = env
+        return FakeProc()
+
+    counts = iter([10, 4])
+    monkeypatch.setattr(freshness.subprocess, "run", fake_run)
+    monkeypatch.setattr(freshness, "_node_count", lambda p: next(counts))
+    monkeypatch.setattr(freshness, "repo_fingerprint", lambda p: "fp")
+
+    result = freshness.run_update("graph.json")
+    assert "GRAPHIFY_FORCE" not in seen["env"]     # env footgun scrubbed
+    assert "--force" not in seen["cmd"]            # never forced without consent
+    assert result.outcome == "shrink_refused"
+    assert freshness.read_state()["outcome"] == "shrink_refused"
+
+
+def test_stale_source_files_is_content_based(monkeypatch, tmp_path) -> None:
+    import json as json_module
+
+    from roger import freshness
+
+    graph = tmp_path / "graph.json"
+    graph.write_text(json_module.dumps({"built_at_commit": "abc", "nodes": []}))
+
+    def fake_git(*args):
+        joined = " ".join(args)
+        if joined.startswith("diff"):
+            return "src/a.py\ndocs/readme.md"
+        if joined.startswith("status"):
+            return " M src/b.py\n?? notes.txt"
+        return "headhash"
+
+    monkeypatch.setattr(freshness, "_git", fake_git)
+    assert freshness.stale_source_files(str(graph)) == ["src/a.py", "src/b.py"]

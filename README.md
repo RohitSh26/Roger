@@ -47,9 +47,8 @@ pip install -e ".[dev]"
 From the root of the repository you want to be quizzed on:
 
 ```bash
-roger init            # build the knowledge graph + register the local model
-roger quiz            # quiz yourself: 5 questions about this repo
-roger guard install   # quiz on staged changes before every commit
+roger                 # that's it — first run sets everything up, then quizzes you
+roger guard install   # optional: quiz on staged changes before every commit
 ```
 
 `roger init` does all the setup: runs graphify over your code (local AST, no API key),
@@ -90,21 +89,20 @@ roger init      # safe to re-run: rewrites .roger/Modelfile, re-registers the
                 # model, rebuilds the graph; never overwrites your config.toml
 ```
 
-### 3. When your own code changes: rebuild the knowledge graph
+### 3. When your own code changes: Roger keeps itself fresh
 
-The graph is a snapshot — new functions, renames, and deleted code don't appear
-until you rebuild it:
+Quiz sessions detect changed source files and refresh the graph in the
+background while you answer — you shouldn't need to think about it. When you
+want an explicit refresh (or the background one reports it needs help after
+big deletions), one command finishes the job, confirmations included:
 
 ```bash
-graphify ./ --code-only     # fast graph-only rebuild
-# or: roger init            # same rebuild + model/config checks
+roger update
 ```
 
-Cached questions take care of themselves: they're keyed by a hash of each
-function's code neighborhood, so changed code automatically gets fresh questions
-and unchanged code keeps its instant cache hits. A good habit is rebuilding the
-graph before a quiz session or after merging a significant branch.
-(`roger update` will automate this in a later phase.)
+Cached questions take care of themselves: keys include the exact source text,
+the difficulty, and the model, so changed code always regenerates and
+unchanged code stays instant — including across model switches.
 
 ## Commands
 
@@ -118,6 +116,7 @@ graph before a quiz session or after merging a significant branch.
 | `roger ask "…"` | Ask a question about the codebase — answered from graph, source, and docs, with cited sources |
 | `roger ask "…" --web` | Same answer rendered in the browser: formatted markdown, highlighted code, diagrams |
 | `roger use azure` / `roger use ollama` | Switch the generation backend — writes config for you, applies to quiz, `--web`, guard, and ask |
+| `roger update` | Refresh the knowledge graph now (background refresh usually handles it) |
 | `roger guard` | Run the quiz on currently staged files (what the hook runs) |
 | `roger guard install` | Write the pre-commit hook to `.git/hooks/pre-commit` |
 | `roger guard uninstall` | Remove the hook (only if Roger installed it) |
@@ -236,8 +235,6 @@ That's it — `roger quiz` and `roger guard` now use that model. Notes:
   exists instead of creating it (so your model tag is never touched); if it's missing,
   Roger tells you the exact `ollama pull` command.
 - **Config is per-repo**, so different repos can use different models.
-- **Clear the question cache after switching** — cached questions are keyed by code,
-  not by model, so old questions keep serving until you `rm .roger/cache.db`.
 - **Bigger models generally write better questions** (and slower ones). The model needs
   to follow "respond with JSON only" instructions reliably; most instruct-tuned models
   3B+ are fine. Still local-only: Roger never calls anything beyond `localhost:11434`.

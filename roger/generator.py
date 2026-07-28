@@ -18,21 +18,47 @@ from roger.storage import cache_questions, get_cached_questions
 # Bump when question generation changes materially (prompt style, filters).
 # The version feeds the cache key, so everyone's stale-style questions
 # regenerate automatically — no manual cache clearing across a team.
-QUESTION_STYLE_VERSION = 13
+QUESTION_STYLE_VERSION = 14
 
 
-def hash_node(node: dict, subgraph: nx.DiGraph) -> str:
-    """SHA-256 of node attributes + serialized subgraph. Cache key.
+def _model_id(config: Config) -> str:
+    if config.model.provider == "azure-anthropic":
+        return f"azure:{config.model.azure_deployment}"
+    return f"ollama:{config.model.local}"
 
-    Stable: dict keys are sorted and the subgraph serializer is deterministic,
-    so identical code always produces an identical hash.
+
+def hash_node(
+    node: dict,
+    subgraph: nx.DiGraph,
+    snippet: str = "",
+    difficulty: str = "",
+    model: str = "",
+) -> str:
+    """SHA-256 cache key: what the developer's questions were built from.
+
+    Includes only prompt-relevant, stable inputs: identity/signature facts,
+    call relationships, the EXACT rendered source snippet, difficulty, and
+    the generating model. Deliberately excludes `community` — Leiden ids
+    renumber on every re-cluster, and including them would mass-orphan the
+    cache on every background graph refresh.
     """
-    canonical_node = json.dumps(node, sort_keys=True, default=str)
-    payload = (
-        f"style-v{QUESTION_STYLE_VERSION}\n"
-        + canonical_node
-        + "\n"
-        + g.serialize_subgraph(subgraph)
+    stable = {
+        "id": node.get("id"),
+        "display": node.get("display"),
+        "file": node.get("file"),
+        "returns": node.get("returns"),
+        "callers": node.get("callers", []),
+        "callees": node.get("callees", []),
+    }
+    payload = "\n".join(
+        [
+            f"style-v{QUESTION_STYLE_VERSION}",
+            f"difficulty={difficulty}",
+            f"model={model}",
+            json.dumps(stable, sort_keys=True, default=str),
+            hashlib.sha256(snippet.encode("utf-8")).hexdigest(),
+            g.serialize_subgraph(subgraph),
+        ]
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -107,26 +133,30 @@ def iter_questions(
     leftovers: list[Question] = []
     last_error: Exception | None = None
 
-    for node_id in node_ids:
+    # Prepare every node once — snippet read, key, cache lookup — then order
+    # cache hits first so early questions are instant while cold nodes
+    # generate during answering. The SAME snippet string feeds both the key
+    # and the prompt (no read-twice TOCTOU window).
+    prepared = _prepare_nodes(node_ids, graph, difficulty, config)
+
+    for item in prepared:
         if yielded >= count:
             break
-        node = g.get_node(graph, node_id)
-        subgraph = g.get_subgraph(graph, node_id, hops=1)
-        node_hash = hash_node(node, subgraph)
-
-        cached = get_cached_questions(node_hash)
-        batch: list[Question] = []
-        if cached is not None:
-            batch = [q for q in cached if q.difficulty == difficulty]
-        if not batch:
+        batch = item["batch"]
+        if batch is None:
             try:
-                batch = get_questions_from_llm(node, graph, difficulty, per_node, config=config)
+                batch = get_questions_from_llm(
+                    item["node"], graph, difficulty, per_node,
+                    config=config, snippet=item["snippet"],
+                )
             except ValueError as exc:
                 # One node the model can't write valid questions for must not
                 # kill the whole quiz — skip it and quiz on the rest.
                 last_error = exc
                 continue
-            cache_questions(node_hash, node_id, difficulty, batch, config.model.local)
+            cache_questions(
+                item["key"], item["node_id"], difficulty, batch, _model_id(config)
+            )
 
         fresh = [q for q in batch if q.question not in seen_texts]
         if not fresh:
@@ -151,6 +181,34 @@ def iter_questions(
         raise last_error
 
 
+def _prepare_nodes(
+    node_ids: list[str], graph: nx.DiGraph, difficulty: str, config: Config
+) -> list[dict]:
+    """One pass per node: snippet, cache key, cached batch. Cache hits first."""
+    model = _model_id(config)
+    prepared: list[dict] = []
+    for node_id in node_ids:
+        node = g.get_node(graph, node_id)
+        subgraph = g.get_subgraph(graph, node_id, hops=1)
+        snippet = g.get_source_snippet(node)
+        key = hash_node(node, subgraph, snippet=snippet, difficulty=difficulty, model=model)
+        cached = get_cached_questions(key)
+        batch = (
+            [q for q in cached if q.difficulty == difficulty] if cached is not None else []
+        )
+        prepared.append(
+            {
+                "node_id": node_id,
+                "node": node,
+                "snippet": snippet,
+                "key": key,
+                "batch": batch or None,
+            }
+        )
+    prepared.sort(key=lambda item: item["batch"] is None)  # stable: hits first
+    return prepared
+
+
 def interleave_questions(
     stream: Iterable[Question], extras: list[Question]
 ) -> Iterator[Question]:
@@ -170,22 +228,15 @@ def interleave_questions(
 
 
 def order_cache_first(
-    node_ids: list[str], graph: nx.DiGraph, difficulty: str
+    node_ids: list[str],
+    graph: nx.DiGraph,
+    difficulty: str,
+    config: Optional[Config] = None,
 ) -> list[str]:
-    """Order nodes so cache hits come first.
-
-    Cached nodes yield questions instantly; putting them ahead means early
-    questions appear immediately while cold nodes generate in the
-    background during answering.
-    """
-    cached_ids, uncached_ids = [], []
-    for node_id in node_ids:
-        node = g.get_node(graph, node_id)
-        subgraph = g.get_subgraph(graph, node_id, hops=1)
-        entry = get_cached_questions(hash_node(node, subgraph))
-        hit = entry is not None and any(q.difficulty == difficulty for q in entry)
-        (cached_ids if hit else uncached_ids).append(node_id)
-    return cached_ids + uncached_ids
+    """Order nodes so cache hits come first (iter_questions now does this
+    internally; kept as a public helper)."""
+    prepared = _prepare_nodes(node_ids, graph, difficulty, config or Config())
+    return [item["node_id"] for item in prepared]
 
 
 def generate_questions(

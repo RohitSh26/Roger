@@ -697,8 +697,13 @@ def get_questions(
     difficulty: str,
     count: int,
     config: Optional[Config] = None,
+    snippet: Optional[str] = None,
 ) -> list[Question]:
     """Route to the correct tier for one node's questions.
+
+    Pass `snippet` when the caller already read the source (the generator
+    does, for the cache key) — the same string then feeds the key, the
+    prompt, and the constructed formats, closing the read-twice window.
 
     Tier 0: difficulty == 'simple' → templates (zero LLM)
     Tier 1: difficulty == 'medium' or 'hard' → local Ollama
@@ -714,7 +719,8 @@ def get_questions(
 
     # The developer sees exactly what the model sees — a complete block
     # (get_source_snippet ends it with a visible marker if it had to cut).
-    snippet = g.get_source_snippet(node)
+    if snippet is None:
+        snippet = g.get_source_snippet(node)
     display_snippet = snippet
 
     # Construction-grounded questions when the source supports them — their

@@ -73,6 +73,8 @@ class GuardConfig:
     enabled: bool = True
     difficulty: str = "medium"
     block_on_fail: bool = True
+    # When staged source files aren't in the graph, warn (False) or block (True).
+    require_coverage: bool = False
 
 
 @dataclass

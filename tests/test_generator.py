@@ -236,7 +236,7 @@ def test_generate_questions_caches_llm_output(
 ) -> None:
     calls = {"count": 0}
 
-    def fake_llm(node, graph, difficulty, count, config=None):
+    def fake_llm(node, graph, difficulty, count, config=None, snippet=None):
         calls["count"] += 1
         return [make_question(node_id=node["id"], text=f"Q about {node['id']}?")]
 
@@ -257,7 +257,7 @@ def test_generate_questions_regenerates_for_new_difficulty(
 ) -> None:
     calls = {"count": 0}
 
-    def fake_llm(node, graph, difficulty, count, config=None):
+    def fake_llm(node, graph, difficulty, count, config=None, snippet=None):
         calls["count"] += 1
         return [make_question(node_id=node["id"], difficulty=difficulty)]
 
@@ -273,7 +273,7 @@ def test_generate_questions_regenerates_when_code_changes(
 ) -> None:
     calls = {"count": 0}
 
-    def fake_llm(node, graph, difficulty, count, config=None):
+    def fake_llm(node, graph, difficulty, count, config=None, snippet=None):
         calls["count"] += 1
         return [make_question(node_id=node["id"])]
 
@@ -382,7 +382,7 @@ def test_generate_questions_asks_small_per_node_batches(
 ) -> None:
     asked: list[int] = []
 
-    def fake_llm(node, graph, difficulty, count, config=None):
+    def fake_llm(node, graph, difficulty, count, config=None, snippet=None):
         asked.append(count)
         return [make_question(node_id=node["id"], text=f"Q {node['id']}?")]
 
@@ -642,7 +642,7 @@ def test_parse_questions_drops_self_answering_items() -> None:
 def test_generate_questions_skips_nodes_the_model_cannot_handle(
     graph_in_repo: nx.DiGraph, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def flaky_llm(node, graph, difficulty, count, config=None):
+    def flaky_llm(node, graph, difficulty, count, config=None, snippet=None):
         if node["id"] == "payments.charge":
             raise ValueError("model kept writing giveaway questions")
         return [make_question(node_id=node["id"], text=f"Q {node['id']}?")]
@@ -658,7 +658,7 @@ def test_generate_questions_skips_nodes_the_model_cannot_handle(
 def test_generate_questions_raises_when_every_node_fails(
     graph_in_repo: nx.DiGraph, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def always_fails(node, graph, difficulty, count, config=None):
+    def always_fails(node, graph, difficulty, count, config=None, snippet=None):
         raise ValueError("no valid questions")
 
     monkeypatch.setattr(generator, "get_questions_from_llm", always_fails)
@@ -1071,7 +1071,7 @@ def test_iter_questions_is_lazy(
 ) -> None:
     calls = {"count": 0}
 
-    def fake_llm(node, graph, difficulty, count, config=None):
+    def fake_llm(node, graph, difficulty, count, config=None, snippet=None):
         calls["count"] += 1
         return [make_question(node_id=node["id"], text=f"Q {node['id']}?")]
 
@@ -1090,7 +1090,7 @@ def test_iter_questions_is_lazy(
 def test_iter_questions_dedupes_and_fills_from_leftovers(
     graph_in_repo: nx.DiGraph, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def fake_llm(node, graph, difficulty, count, config=None):
+    def fake_llm(node, graph, difficulty, count, config=None, snippet=None):
         return [
             make_question(node_id=node["id"], text="Shared question?"),
             make_question(node_id=node["id"], text=f"Unique to {node['id']}?"),
@@ -1122,7 +1122,7 @@ def test_iter_questions_varies_across_sessions(
 ) -> None:
     import random
 
-    def fake_llm(node, graph, difficulty, count, config=None):
+    def fake_llm(node, graph, difficulty, count, config=None, snippet=None):
         return [
             make_question(node_id=node["id"], text=f"{node['id']} q{i}?")
             for i in range(3)
@@ -1147,10 +1147,11 @@ def test_order_cache_first_puts_warm_nodes_up_front(
     # Warm exactly one node's cache.
     node = get_node(graph_in_repo, "db.connect")
     sub = get_subgraph(graph_in_repo, "db.connect", hops=1)
-    cache_questions(
-        generator.hash_node(node, sub), "db.connect", "medium",
-        [make_question(node_id="db.connect")], "roger-local",
+    key = generator.hash_node(
+        node, sub, snippet="", difficulty="medium", model="ollama:roger-local"
     )
+    cache_questions(key, "db.connect", "medium",
+                    [make_question(node_id="db.connect")], "roger-local")
     ordered = generator.order_cache_first(
         ["payments.charge", "auth.login", "db.connect"], graph_in_repo, "medium"
     )
@@ -1408,3 +1409,49 @@ def test_answer_question_admits_when_nothing_matches(
     answer, sources = ask.answer_question("zzz qqq xyzzy", graph)
     assert "couldn't find anything" in answer
     assert sources == []
+
+
+# --- v0.2.0 cache key: stability + sensitivity (review ship-blockers) --------------
+
+
+def test_cache_key_survives_community_renumbering(graph_file) -> None:
+    # Leiden re-clustering renumbers communities on every graph refresh; the
+    # cache key must not churn for untouched code or background refreshes
+    # would mass-orphan the cache.
+    graph_a = load_graph(str(graph_file))
+    graph_b = load_graph(str(graph_file))
+    for node_id in graph_b.nodes:
+        graph_b.nodes[node_id]["community"] = "999"
+
+    def key(graph):
+        return generator.hash_node(
+            *_node_and_subgraph(graph, "payments.charge"),
+            snippet="def charge(): ...", difficulty="medium", model="ollama:m",
+        )
+
+    assert key(graph_a) == key(graph_b)
+
+
+def test_cache_key_sensitive_to_snippet_difficulty_model(graph: nx.DiGraph) -> None:
+    node, sub = _node_and_subgraph(graph, "payments.charge")
+    base = generator.hash_node(node, sub, snippet="v1", difficulty="medium", model="m1")
+    assert generator.hash_node(node, sub, snippet="v2", difficulty="medium", model="m1") != base
+    assert generator.hash_node(node, sub, snippet="v1", difficulty="hard", model="m1") != base
+    assert generator.hash_node(node, sub, snippet="v1", difficulty="medium", model="m2") != base
+
+
+def test_uncovered_source_files_names_unknown_staged_code(graph: nx.DiGraph) -> None:
+    from roger.hooks.pre_commit import uncovered_source_files
+
+    staged = ["src/payments/charge.py", "src/newfeature/service.py", "README.md"]
+    assert uncovered_source_files(staged, graph) == ["src/newfeature/service.py"]
+
+
+def test_bare_roger_non_tty_prints_help_and_exits_2() -> None:
+    from typer.testing import CliRunner
+
+    from roger.cli import app
+
+    result = CliRunner().invoke(app, [])
+    assert result.exit_code == 2          # byte-compatible with pre-0.2.0 behavior
+    assert "Usage" in result.output
