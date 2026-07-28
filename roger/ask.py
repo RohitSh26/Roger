@@ -15,6 +15,8 @@ from typing import Optional
 from roger import graph as g
 from roger.config import Config
 from roger.docs import DocSection, _md_excerpt, discover_doc_files, split_sections
+from roger.freshness import is_source_file
+from roger.graph import _JUNK_NODE_RE, _looks_like_test_file
 from roger.llm.router import chat_with_model, ensure_backend
 from roger.quiz import language_for_file
 
@@ -27,9 +29,20 @@ _STOPWORDS = {
 }
 
 
+def _variants(term: str) -> set[str]:
+    """Cheap stemming: charges→charge, ranking→rank, implemented→implement."""
+    variants = {term}
+    if term.endswith("s"):
+        variants.add(term[:-1])
+    if term.endswith("ing") and len(term) > 5:
+        variants.add(term[:-3])
+    if term.endswith("ed") and len(term) > 4:
+        variants.add(term[:-2])
+    return variants
+
+
 def _hits(term: str, haystack: str) -> bool:
-    """Substring hit with cheap plural-stemming ('charges' finds 'charge')."""
-    return term in haystack or (term.endswith("s") and term[:-1] in haystack)
+    return any(v in haystack for v in _variants(term))
 
 MAX_CODE_MATCHES = 3
 MAX_DOC_MATCHES = 2
@@ -76,16 +89,30 @@ def find_relevant_nodes(graph, question: str, top: int = MAX_CODE_MATCHES) -> li
         return []
     scores: dict[str, int] = {}
     for node_id, attrs in graph.nodes(data=True):
+        display = str(attrs.get("display") or node_id)
         # Sentence-label nodes (doc-derived) make noisy code matches — the
         # docs matcher covers that material properly.
-        if not _IDENTIFIER_NAME_RE.fullmatch(str(attrs.get("display") or node_id)):
+        if not _IDENTIFIER_NAME_RE.fullmatch(display):
             continue
-        names = f"{node_id} {attrs.get('display', '')}".lower()
-        prose = f"{attrs.get('description', '')} {attrs.get('file', '')}".lower()
+        file = str(attrs.get("file") or "")
+        # The CODE matcher serves code. Markdown, configs, and agent-skill
+        # files that graphify indexed must never surface here — a keyword
+        # coincidence in a skill file is noise, not context.
+        if not file or not is_source_file(file):
+            continue
+        if _JUNK_NODE_RE.search(node_id) or _JUNK_NODE_RE.search(display):
+            continue
+        # Production code answers "how does X work"; descriptive test names
+        # are keyword-rich sentences that always out-score real code, so
+        # tests are excluded unless the question is literally about tests.
+        if _looks_like_test_file(file) and not any(t.startswith("test") for t in terms):
+            continue
+        names = f"{node_id} {display}".lower()
+        prose = f"{attrs.get('description', '')} {file}".lower()
         score = sum(3 for t in terms if _hits(t, names)) + sum(
             1 for t in terms if _hits(t, prose)
         )
-        if score:
+        if score > 0:
             scores[node_id] = score
     return sorted(scores, key=lambda n: (-scores[n], n))[:top]
 
@@ -136,7 +163,7 @@ def build_context(
             f"Called by: {', '.join(node['callers'][:8]) or 'none'} | "
             f"Calls: {', '.join(node['callees'][:8]) or 'none'}"
         )
-        snippet = g.get_source_snippet(node, max_lines=60)[:_SNIPPET_CHARS]
+        snippet = g.get_source_snippet(node, max_lines=40)[:_SNIPPET_CHARS]
         block = header + (
             f"\n```{language_for_file(file)}\n{snippet}\n```" if snippet else ""
         )
@@ -172,6 +199,24 @@ def context_pack(
     config = config or Config()
     max_chars = max(2_000, budget_tokens * 4)
     context, sources = build_context(graph, question, config, max_chars=max_chars - 400)
+
+    # Truncation without navigation is lossy; an index makes it precise.
+    # List matches that were NOT expanded so the caller can re-query
+    # narrowly instead of guessing what the budget cut.
+    expanded = len([s for s in sources if "§" not in s])
+    more_lines = []
+    for node_id in find_relevant_nodes(graph, question, top=8)[expanded:]:
+        attrs = graph.nodes[node_id]
+        more_lines.append(
+            f"- {attrs.get('display', node_id)} ({attrs.get('file', '')})"
+        )
+    more_section = (
+        "\n\n## More matches (not expanded)\n"
+        + "\n".join(more_lines)
+        + '\n\nTo expand one, re-run with its name: roger context "<name> <your question>"'
+        if more_lines
+        else ""
+    )
     if not context:
         return (
             f"# Roger context: {question}\n\n"
@@ -186,8 +231,9 @@ def context_pack(
         "mechanically extracted just now — not AI-generated summaries. "
         "Re-reading the cited lines returns identical text.\n\n"
     )
-    pack = f"# Roger context: {question}\n\n{provenance}{context}\n\n## Sources\n" + "\n".join(
-        f"- {s}" for s in sources
+    pack = (
+        f"# Roger context: {question}\n\n{provenance}{context}{more_section}"
+        "\n\n## Sources\n" + "\n".join(f"- {s}" for s in sources)
     )
     if len(pack) > max_chars:
         kept: list[str] = []

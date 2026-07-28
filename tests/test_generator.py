@@ -1546,3 +1546,27 @@ def test_agent_snippet_carries_trust_contract() -> None:
     assert "TRUST CONTRACT" in AGENT_SNIPPET
     assert "VERBATIM" in AGENT_SNIPPET
     assert "MODIFY" in AGENT_SNIPPET    # verification still required for writes
+
+
+def test_code_matcher_never_surfaces_markdown_or_skill_files(graph: nx.DiGraph) -> None:
+    from roger import ask
+
+    # A skill/agent markdown file that graphify indexed, keyword-loaded to
+    # bait the matcher — must never appear as a code match.
+    graph.add_node(
+        "agents_adr_writer",
+        display="adr_writer.md",
+        file="agents/adr_writer.md",
+        description="charges the card via the gateway payment charge charge",
+    )
+    top = ask.find_relevant_nodes(graph, "What charges the card via the gateway?", top=5)
+    assert "agents_adr_writer" not in top
+    assert top and top[0] == "payments.charge"
+
+
+def test_context_pack_lists_unexpanded_matches(graph: nx.DiGraph) -> None:
+    from roger import ask
+
+    pack = ask.context_pack("payments charge card gateway refund", graph, budget_tokens=2000)
+    assert "## More matches (not expanded)" in pack
+    assert 're-run with its name' in pack
