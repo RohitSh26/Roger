@@ -270,6 +270,7 @@ nothing to configure in the agent. Undo anytime with `roger agent uninstall`.
 | `roger log` | See what was recently asked of Roger — including by your agents |
 | `roger guard install` | Quiz on staged changes before every commit |
 | `roger update` | Refresh Roger's map of your code by hand |
+| `roger doctor` | Check this environment and print fixes for anything wrong |
 | `roger use ollama` / `roger use azure …` | Choose where the AI runs |
 | `roger init` | Set up manually (bare `roger` does this for you) |
 
@@ -277,7 +278,14 @@ nothing to configure in the agent. Undo anytime with `roger agent uninstall`.
 
 ## When something goes wrong
 
-Every Roger error tells you the fix, but here are the common ones:
+First move, always:
+
+```bash
+roger doctor
+```
+
+It checks your environment end to end — Python, the code map, the AI backend,
+agent files — and prints the exact fix for anything wrong. The common cases:
 
 **"Ollama is not running"** — open the Ollama app (or run `ollama serve` in
 another terminal window and leave it open).
