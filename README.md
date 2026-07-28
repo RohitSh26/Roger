@@ -117,12 +117,30 @@ unchanged code stays instant — including across model switches.
 | `roger ask "…" --web` | Same answer rendered in the browser: formatted markdown, highlighted code, diagrams |
 | `roger use azure` / `roger use ollama` | Switch the generation backend — writes config for you, applies to quiz, `--web`, guard, and ask |
 | `roger update` | Refresh the knowledge graph now (background refresh usually handles it) |
+| `roger context "…"` | Budgeted, cited context pack for coding agents (zero LLM calls) |
+| `roger agent install` | Teach agents in this repo to use Roger instead of grep/read |
 | `roger guard` | Run the quiz on currently staged files (what the hook runs) |
 | `roger guard install` | Write the pre-commit hook to `.git/hooks/pre-commit` |
 | `roger guard uninstall` | Remove the hook (only if Roger installed it) |
 
 Planned (not yet built): `roger chat`, `roger report`, `roger update`,
 `roger status`, and quiz scoping flags (`--module`, `--since`, `--difficulty`).
+
+## For coding agents — no MCP, no server
+
+Agents that can run shell commands (Claude Code, OpenCode, Copilot, Codex,
+Cursor, Aider) integrate with one command and one instruction:
+
+```bash
+roger agent install     # writes a short section into AGENTS.md (+ CLAUDE.md if present)
+```
+
+From then on, agents run `roger context "<question>" --budget 2000` before
+grepping or reading whole files, and receive a budgeted, cited pack: complete
+source blocks, the team's recorded decisions (ADRs, contracts), and call
+relationships. Zero LLM calls — Roger retrieves, the agent reasons — so packs
+are instant and work with no model backend at all. Humans can run the exact
+same command to see exactly what the agent saw.
 
 ## Azure AI Foundry (Anthropic) — optional enterprise backend
 

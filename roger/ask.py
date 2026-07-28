@@ -118,9 +118,11 @@ def find_relevant_sections(
     return [section for _, section in scored[:top]]
 
 
-def build_context(graph, question: str, config: Config) -> tuple[str, list[str]]:
+def build_context(
+    graph, question: str, config: Config, max_chars: Optional[int] = None
+) -> tuple[str, list[str]]:
     """(material for the prompt, human-readable source labels)."""
-    budget = max(6_000, (config.ollama.num_ctx - 1_200) * 5 // 2)
+    budget = max_chars or max(6_000, (config.ollama.num_ctx - 1_200) * 5 // 2)
     blocks: list[str] = []
     sources: list[str] = []
     used = 0
@@ -153,6 +155,44 @@ def build_context(graph, question: str, config: Config) -> tuple[str, list[str]]
         used += len(block)
 
     return "\n\n".join(blocks), sources
+
+
+def context_pack(
+    question: str,
+    graph,
+    config: Optional[Config] = None,
+    budget_tokens: int = 2_000,
+) -> str:
+    """A cited context pack for coding agents — the briefing without the answer.
+
+    Zero LLM calls: Roger retrieves and assembles (complete source blocks,
+    doc/ADR excerpts, call facts); the agent does its own reasoning. Output
+    is plain markdown on stdout, capped at a token budget (~4 chars/token).
+    """
+    config = config or Config()
+    max_chars = max(2_000, budget_tokens * 4)
+    context, sources = build_context(graph, question, config, max_chars=max_chars - 400)
+    if not context:
+        return (
+            f"# Roger context: {question}\n\n"
+            "No matching code or docs found. Try naming a function, class, "
+            "file, or doc topic — or the graph may need `roger update`."
+        )
+    pack = f"# Roger context: {question}\n\n{context}\n\n## Sources\n" + "\n".join(
+        f"- {s}" for s in sources
+    )
+    if len(pack) > max_chars:
+        kept: list[str] = []
+        used = 0
+        for line in pack.splitlines():
+            if used + len(line) + 1 > max_chars - 80:
+                break
+            kept.append(line)
+            used += len(line) + 1
+        kept.append("")
+        kept.append("*(truncated at budget — narrow the question or raise --budget)*")
+        pack = "\n".join(kept)
+    return pack
 
 
 def answer_question(question: str, graph, config: Optional[Config] = None) -> tuple[str, list[str]]:

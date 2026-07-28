@@ -24,7 +24,7 @@ from rich.markdown import Markdown as RichMarkdown
 from rich.markup import escape
 from rich.panel import Panel
 
-from roger.ask import answer_question
+from roger.ask import answer_question, context_pack
 
 from roger.config import (
     CONFIG_PATH,
@@ -544,6 +544,100 @@ def use(
             f"✓ Backend: Ollama — model '{config.model.local}'. "
             "Applies to quiz, quiz --web, guard, and ask."
         )
+
+
+AGENT_SNIPPET_START = "<!-- roger:start -->"
+AGENT_SNIPPET_END = "<!-- roger:end -->"
+AGENT_SNIPPET = f"""{AGENT_SNIPPET_START}
+## Roger — token-efficient code context
+
+Before exploring this codebase with grep/find or by reading whole files, run:
+
+    roger context "<your question>" --budget 2000
+
+It returns the relevant source (complete functions), the team's recorded
+decisions (ADRs, contracts), and call relationships in one budgeted, cited
+pack — typically far fewer tokens than raw file reading. For a direct
+answered question with citations, use `roger ask "<question>"` instead.
+{AGENT_SNIPPET_END}"""
+
+agent_app = typer.Typer(help="Teach coding agents to use Roger (no MCP, no server).")
+app.add_typer(agent_app, name="agent")
+
+
+@app.command()
+def context(
+    question: str,
+    budget: int = typer.Option(
+        2000, "--budget", help="Token budget for the pack (approximate)."
+    ),
+) -> None:
+    """Print a cited context pack for a question — built for coding agents.
+
+    Zero LLM calls: instant, free, and works without any model backend.
+    """
+    _anchor_repo_root()
+    config = _load_config()
+    try:
+        graph = load_graph(config.graph.path)
+    except GraphNotFoundError as exc:
+        _fail(str(exc))
+        return
+    freshness.maybe_refresh_in_background(config.graph.path)
+    # Plain stdout — agents consume this; no panels, no colors.
+    typer.echo(context_pack(question, graph, config, budget_tokens=budget))
+
+
+def _install_snippet(path: Path) -> str:
+    if path.exists():
+        text = path.read_text(encoding="utf-8")
+        if AGENT_SNIPPET_START in text and AGENT_SNIPPET_END in text:
+            start = text.index(AGENT_SNIPPET_START)
+            end = text.index(AGENT_SNIPPET_END) + len(AGENT_SNIPPET_END)
+            path.write_text(text[:start] + AGENT_SNIPPET + text[end:], encoding="utf-8")
+            return "updated"
+        path.write_text(text.rstrip() + "\n\n" + AGENT_SNIPPET + "\n", encoding="utf-8")
+        return "appended"
+    path.write_text(AGENT_SNIPPET + "\n", encoding="utf-8")
+    return "created"
+
+
+@agent_app.command("install")
+def agent_install() -> None:
+    """Write the Roger instructions into AGENTS.md (and CLAUDE.md if present)."""
+    if _anchor_repo_root() is None:
+        _fail("✗ Roger: run this inside a git repository.")
+    outcome = _install_snippet(Path("AGENTS.md"))
+    console.print(f"✓ AGENTS.md {outcome} — OpenCode, Copilot, Codex, and Aider read it.")
+    if Path("CLAUDE.md").exists():
+        outcome = _install_snippet(Path("CLAUDE.md"))
+        console.print(f"✓ CLAUDE.md {outcome} — Claude Code reads it.")
+    console.print("  Agents will now run 'roger context' before grepping and reading files.")
+
+
+@agent_app.command("uninstall")
+def agent_uninstall() -> None:
+    """Remove the Roger instructions from AGENTS.md and CLAUDE.md."""
+    _anchor_repo_root()
+    removed = 0
+    for name in ("AGENTS.md", "CLAUDE.md"):
+        path = Path(name)
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8")
+        if AGENT_SNIPPET_START not in text:
+            continue
+        start = text.index(AGENT_SNIPPET_START)
+        end = text.index(AGENT_SNIPPET_END) + len(AGENT_SNIPPET_END)
+        cleaned = (text[:start] + text[end:]).strip()
+        if cleaned:
+            path.write_text(cleaned + "\n", encoding="utf-8")
+        else:
+            path.unlink()
+        removed += 1
+        console.print(f"✓ Roger section removed from {name}.")
+    if not removed:
+        console.print("Roger: no agent instructions found; nothing removed.")
 
 
 @app.command()

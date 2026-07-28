@@ -1455,3 +1455,46 @@ def test_bare_roger_non_tty_prints_help_and_exits_2() -> None:
     result = CliRunner().invoke(app, [])
     assert result.exit_code == 2          # byte-compatible with pre-0.2.0 behavior
     assert "Usage" in result.output
+
+
+# --- roger context: agent-facing packs (zero LLM) ------------------------------------
+
+
+def test_context_pack_is_cited_budgeted_and_llm_free(
+    graph: nx.DiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from roger import ask
+
+    def no_llm(*args, **kwargs):
+        raise AssertionError("context packs must never call a model")
+
+    monkeypatch.setattr(ask, "chat_with_model", no_llm)
+    monkeypatch.setattr(local, "call_local", no_llm)
+    monkeypatch.setattr(local, "chat_local", no_llm)
+
+    pack = ask.context_pack("What charges the card?", graph, budget_tokens=2000)
+    assert pack.startswith("# Roger context: What charges the card?")
+    assert "### Code: payments.charge" in pack
+    assert "## Sources" in pack
+
+    tiny = ask.context_pack("What charges the card?", graph, budget_tokens=500)
+    assert len(tiny) <= 500 * 4
+    nothing = ask.context_pack("zzz qqq xyzzy", graph)
+    assert "No matching code or docs" in nothing
+
+
+def test_agent_install_snippet_is_marker_managed(tmp_path, monkeypatch) -> None:
+    from pathlib import Path
+
+    from roger import cli
+
+    monkeypatch.chdir(tmp_path)
+    agents = Path("AGENTS.md")
+    agents.write_text("# Existing instructions\n\nKeep me.\n", encoding="utf-8")
+
+    assert cli._install_snippet(agents) == "appended"
+    text = agents.read_text(encoding="utf-8")
+    assert "Keep me." in text and "roger context" in text
+
+    assert cli._install_snippet(agents) == "updated"     # idempotent, no duplicates
+    assert agents.read_text(encoding="utf-8").count(cli.AGENT_SNIPPET_START) == 1
