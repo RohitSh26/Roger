@@ -75,10 +75,35 @@ def _connect(db_name: str, schema: str) -> sqlite3.Connection:
         raise CacheError(f"Could not open {path}: {exc}") from exc
 
 
+ROGER_GITIGNORE = """# maintained by Roger — machine-local files, never commit these
+vectors.db
+activity.log
+update.log
+update-state.json
+update.lock
+quiz-pending.json
+history.db
+Modelfile
+"""
+
+
+def ensure_roger_gitignore() -> None:
+    """Make the right git behavior automatic: cache.db and config.toml stay
+    shareable; machine-local files can never be committed by accident."""
+    try:
+        path = ROGER_DIR / ".gitignore"
+        if not path.exists() or path.read_text(encoding="utf-8") != ROGER_GITIGNORE:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(ROGER_GITIGNORE, encoding="utf-8")
+    except OSError:
+        pass
+
+
 def init_dbs() -> None:
     """Create both databases and their tables (used by `roger init`)."""
     _connect("cache.db", CACHE_SCHEMA).close()
     _connect("history.db", HISTORY_SCHEMA).close()
+    ensure_roger_gitignore()
 
 
 # --- cache.db ---------------------------------------------------------------

@@ -82,11 +82,67 @@ def _terms(question: str) -> list[str]:
     return terms
 
 
+def retrieve_nodes(
+    graph, question: str, config: Optional[Config] = None, top: int = MAX_CODE_MATCHES
+) -> list[str]:
+    """Final code retrieval: keyword ∪ semantic channels, rank-fused.
+
+    Two independent channels so a question sharing no words with its answer
+    can still arrive via meaning. Fused with Reciprocal Rank Fusion (scale-
+    free — keyword integers and cosine bands don't share a scale). An exact
+    identifier match is pinned ahead of fusion: semantic similarity must
+    never displace a literal name hit. No index/model → exactly the keyword
+    ranking, bit-identical to keyword-only Roger.
+    """
+    from roger import embeddings
+
+    keyword = find_relevant_nodes(graph, question, top=30)
+    semantic = embeddings.semantic_rank(question, config or Config(), top=30)
+    if semantic and not any(t.startswith("test") for t in _terms(question)):
+        # Same rule as the keyword channel: tests never answer "how does X
+        # work" — similarity must not smuggle them back in.
+        semantic = [
+            n for n in semantic
+            if not _looks_like_test_file(str(graph.nodes[n].get("file") or ""))
+        ]
+
+    if not semantic:
+        fused = keyword
+    else:
+        scores: dict[str, float] = {}
+        for rank, node_id in enumerate(keyword):
+            scores[node_id] = scores.get(node_id, 0.0) + 1.0 / (60 + rank)
+        for rank, node_id in enumerate(semantic):
+            scores[node_id] = scores.get(node_id, 0.0) + 1.0 / (60 + rank)
+        fused = sorted(scores, key=lambda n: (-scores[n], n))
+
+    # Exact-name pin: a term that IS the identifier wins outright. Both the
+    # qualified form and the bare tail count — a developer types "charge",
+    # the graph knows "payments.charge".
+    terms = set(_terms(question))
+
+    def _is_named(node_id: str) -> bool:
+        display = str(graph.nodes[node_id].get("display", node_id))
+        names = set()
+        for raw in (display, node_id):
+            name = raw.lower().removesuffix("()")
+            names.add(name)
+            names.add(name.rsplit(".", 1)[-1])
+        return bool(names & terms)
+
+    pinned = [node_id for node_id in fused if _is_named(node_id)]
+    ordered = pinned + [n for n in fused if n not in pinned]
+    return ordered[:top]
+
+
 def find_relevant_nodes(graph, question: str, top: int = MAX_CODE_MATCHES) -> list[str]:
-    """Node ids best matching the question — names weigh more than prose."""
+    """Keyword channel: node ids best matching the question by words."""
     terms = _terms(question)
     if not terms:
         return []
+    from roger import embeddings
+
+    card_texts = embeddings.load_card_texts()  # docstring-aware when index exists
     # "Is this code?" — answered by the graph, not by an extension list.
     # Whatever language graphify parsed produces call edges; an extension
     # whitelist would go silent on Elixir/Dart/Lua repos. The extension
@@ -120,7 +176,10 @@ def find_relevant_nodes(graph, question: str, top: int = MAX_CODE_MATCHES) -> li
         if _looks_like_test_file(file) and not any(t.startswith("test") for t in terms):
             continue
         names = f"{node_id} {display}".lower()
-        prose = f"{attrs.get('description', '')} {file}".lower()
+        prose = (
+            f"{attrs.get('description', '')} {file} "
+            f"{card_texts.get(node_id, '')}".lower()
+        )
         score = sum(3 for t in terms if _hits(t, names)) + sum(
             1 for t in terms if _hits(t, prose)
         )
@@ -166,7 +225,7 @@ def build_context(
     sources: list[str] = []
     used = 0
 
-    for node_id in find_relevant_nodes(graph, question):
+    for node_id in retrieve_nodes(graph, question, config):
         node = g.get_node(graph, node_id)
         name = str(node.get("display") or node_id)
         file = str(node.get("file") or "")
@@ -217,7 +276,7 @@ def context_pack(
     # narrowly instead of guessing what the budget cut.
     expanded = len([s for s in sources if "§" not in s])
     more_lines = []
-    for node_id in find_relevant_nodes(graph, question, top=8)[expanded:]:
+    for node_id in retrieve_nodes(graph, question, config, top=8)[expanded:]:
         attrs = graph.nodes[node_id]
         more_lines.append(
             f"- {attrs.get('display', node_id)} ({attrs.get('file', '')})"

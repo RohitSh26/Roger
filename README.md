@@ -136,6 +136,40 @@ roger ask "how does search ranking work?" --web
 
 If Roger can't find anything relevant, it says so plainly — it does not guess.
 
+### Smarter search (optional, one keypress)
+
+Out of the box, Roger finds code by matching the words in your question
+against names and files. That works well when you know what things are
+called. But sometimes you don't — you ask *"how do we slow down repeated
+requests?"* and the code calls it `throttle`.
+
+The first time you run `roger` on a computer, it offers to fix this:
+
+```
+Enable smarter search? Finds code by meaning, not just keywords
+(~270 MB one-time download) [Y/n]
+```
+
+Press **Enter** to say yes. Roger downloads one small extra model into
+Ollama (the same app it already uses) and quietly builds a meaning-based
+index of your code in the background. From then on, questions find the
+right code even when you don't know its name — in `roger ask`, in agent
+context packs, everywhere.
+
+Things worth knowing, in plain terms:
+
+- **Saying no is fine.** Press `n` and Roger never asks again on this
+  computer. Keyword search keeps working exactly as before. If you change
+  your mind later, `roger doctor` offers again.
+- **Nothing leaves your machine.** The index lives in `.roger/vectors.db`
+  on your disk, is built by your local Ollama, and Roger automatically
+  git-ignores it so it can't sneak into a commit.
+- **It can never slow you down.** If the meaning lookup isn't ready within
+  half a second, Roger silently uses keyword search for that question.
+  There is no error to handle and no waiting.
+- **It stays current by itself.** The index refreshes in the same
+  background pass that keeps the code map fresh.
+
 ---
 
 ## The commit guard (optional, recommended)

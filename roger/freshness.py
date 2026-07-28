@@ -283,13 +283,15 @@ def run_update(graph_path: str, force: bool = False) -> UpdateResult:
     return result
 
 
-def maybe_refresh_in_background(graph_path: str) -> bool:
+def maybe_refresh_in_background(graph_path: str, force: bool = False) -> bool:
     """Spawn a detached background refresh if warranted. Returns True if spawned.
 
     Warranted = source files changed since the graph was built, no update
     already running, and this exact repo state hasn't already failed.
+    force=True skips the staleness gate (used right after enabling smarter
+    search, so the index builds even on a fresh graph).
     """
-    if not stale_source_files(graph_path):
+    if not force and not stale_source_files(graph_path):
         return False
     if lock_held():
         return False

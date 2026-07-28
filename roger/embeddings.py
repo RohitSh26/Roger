@@ -1,0 +1,364 @@
+"""Local semantic retrieval — invisible by design.
+
+Reviewed shape: enriched code cards (name + file + signature/docstring/body
+head) embedded via the already-required Ollama; vectors in a separate,
+never-committed .roger/vectors.db; a full-index scan at query time (numpy —
+already present via graphify — with a math.sumprod fallback); consent is
+capability-sensed per machine (the model being present IS enablement; only a
+refusal is recorded, in ~/.roger/state.json). Every failure degrades silently
+to keyword-only retrieval — except an embedding-model digest mismatch, which
+hard-disables the semantic channel and schedules a rebuild, because comparing
+vectors across embedding spaces returns confidently wrong neighbors.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import sqlite3
+import sys
+import time
+from contextlib import closing
+from pathlib import Path
+from typing import Optional
+
+import requests
+
+from roger import graph as g
+from roger.config import Config
+
+EMBED_VERSION = 1
+EMBED_MODEL = "nomic-embed-text"
+VECTORS_PATH = Path(".roger/vectors.db")
+MACHINE_STATE_PATH = Path.home() / ".roger" / "state.json"
+QUERY_DEADLINE_SECS = 0.5  # cold model loads keep loading server-side; next call is warm
+_DOC_PREFIX = "search_document: "
+_QUERY_PREFIX = "search_query: "
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS cards (
+    node_id      TEXT PRIMARY KEY,
+    content_hash TEXT NOT NULL,
+    card_text    TEXT NOT NULL,
+    vec          BLOB
+);
+"""
+
+# In-process matrix cache: (db mtime, node_ids, matrix)
+_matrix_cache: tuple = (None, None, None)
+
+
+# --- machine state (consent) --------------------------------------------------------
+
+
+def _read_machine_state() -> dict:
+    try:
+        return json.loads(MACHINE_STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _write_machine_state(state: dict) -> None:
+    try:
+        MACHINE_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        MACHINE_STATE_PATH.write_text(json.dumps(state), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def embed_prompt_declined() -> bool:
+    return bool(_read_machine_state().get("embed_prompt_declined"))
+
+
+def record_declined() -> None:
+    state = _read_machine_state()
+    state["embed_prompt_declined"] = True
+    _write_machine_state(state)
+
+
+def clear_declined() -> None:
+    state = _read_machine_state()
+    state.pop("embed_prompt_declined", None)
+    _write_machine_state(state)
+
+
+# --- model capability sensing ---------------------------------------------------------
+
+
+def model_digest(config: Config) -> Optional[str]:
+    """Digest of the embed model in Ollama, or None if absent/unreachable.
+
+    Presence IS enablement — no flag anywhere. Pinned by digest so an
+    upstream re-release under the same tag is detectable.
+    """
+    try:
+        resp = requests.get(f"{config.ollama.url}/api/tags", timeout=2)
+        resp.raise_for_status()
+    except requests.RequestException:
+        return None
+    for model in resp.json().get("models", []):
+        if str(model.get("name", "")).split(":")[0] == EMBED_MODEL:
+            return str(model.get("digest") or "") or None
+    return None
+
+
+def _embed(texts: list[str], config: Config, timeout: float) -> Optional[list[list[float]]]:
+    try:
+        resp = requests.post(
+            f"{config.ollama.url}/api/embed",
+            json={"model": EMBED_MODEL, "input": texts},
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        embeddings = resp.json().get("embeddings")
+        return embeddings if isinstance(embeddings, list) and embeddings else None
+    except (requests.RequestException, ValueError):
+        return None
+
+
+# --- cards -----------------------------------------------------------------------------
+
+
+def card_text(node: dict) -> str:
+    """What gets embedded: identity plus actual meaning.
+
+    Name+path alone is semantically empty for code; the docstring and body
+    head are where the meaning lives. Vector size is constant regardless of
+    text length — richer cards cost nothing at rest.
+    """
+    head = g.get_source_snippet(node, max_lines=12)[:600]
+    return f"{node.get('display', node['id'])}\n{node.get('file', '')}\n{head}".strip()
+
+
+def card_hash(text: str, digest: str) -> str:
+    payload = f"embed-v{EMBED_VERSION}\n{digest}\n{text}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _connect() -> sqlite3.Connection:
+    VECTORS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(VECTORS_PATH, timeout=5)
+    conn.execute("PRAGMA busy_timeout=3000")
+    conn.executescript(_SCHEMA)
+    return conn
+
+
+def load_card_texts() -> dict[str, str]:
+    """Card texts for the keyword channel — docstring-aware search for
+    everyone, vectors or not. Empty dict when no index exists."""
+    if not VECTORS_PATH.exists():
+        return {}
+    try:
+        with closing(_connect()) as conn:
+            return dict(conn.execute("SELECT node_id, card_text FROM cards"))
+    except sqlite3.Error:
+        return {}
+
+
+def _candidate_nodes(graph) -> list[str]:
+    """Same admission rule as the code-lane keyword matcher."""
+    from roger.ask import _IDENTIFIER_NAME_RE  # shared bouncer
+    from roger.freshness import is_source_file
+    from roger.graph import _JUNK_NODE_RE, _is_call_edge
+
+    in_calls: set[str] = set()
+    for src, dst, data in graph.edges(data=True):
+        if _is_call_edge(data):
+            in_calls.add(src)
+            in_calls.add(dst)
+    picked = []
+    for node_id, attrs in graph.nodes(data=True):
+        display = str(attrs.get("display") or node_id)
+        file = str(attrs.get("file") or "")
+        if not _IDENTIFIER_NAME_RE.fullmatch(display):
+            continue
+        if not file or file.lower().endswith((".md", ".markdown")):
+            continue
+        if node_id not in in_calls and not is_source_file(file):
+            continue
+        if _JUNK_NODE_RE.search(node_id) or _JUNK_NODE_RE.search(display):
+            continue
+        picked.append(node_id)
+    return picked
+
+
+def refresh_index(graph, config: Config, batch_size: int = 64) -> Optional[dict]:
+    """(Re)embed changed cards. Runs inside the freshness flow; never raises.
+
+    Returns coverage stats or None when the model isn't available. A digest
+    change invalidates every card (embedding spaces don't mix).
+    """
+    digest = model_digest(config)
+    if digest is None:
+        return None
+    try:
+        with closing(_connect()) as conn:
+            stored = dict(conn.execute("SELECT node_id, content_hash FROM cards"))
+            candidates = _candidate_nodes(graph)
+            pending: list[tuple[str, str, str]] = []
+            for node_id in candidates:
+                node = g.get_node(graph, node_id)
+                text = card_text(node)
+                content = card_hash(text, digest)
+                if stored.get(node_id) != content:
+                    pending.append((node_id, text, content))
+
+            embedded = 0
+            for start in range(0, len(pending), batch_size):
+                batch = pending[start : start + batch_size]
+                vectors = _embed(
+                    [_DOC_PREFIX + text for _, text, _ in batch], config, timeout=120
+                )
+                if vectors is None or len(vectors) != len(batch):
+                    break  # partial coverage is fine; next refresh resumes
+                rows = [
+                    (node_id, content, text, _pack(vector))
+                    for (node_id, text, content), vector in zip(batch, vectors)
+                ]
+                conn.executemany(
+                    "INSERT OR REPLACE INTO cards (node_id, content_hash, card_text, vec) "
+                    "VALUES (?, ?, ?, ?)",
+                    rows,
+                )
+                conn.commit()
+                embedded += len(rows)
+
+            # Deleted code loses its card; chunked to stay under SQLite's
+            # bound-parameter limit on large repos.
+            dead = [n for n in stored if n not in set(candidates)]
+            for start in range(0, len(dead), 500):
+                chunk = dead[start : start + 500]
+                conn.execute(
+                    "DELETE FROM cards WHERE node_id IN (%s)" % ",".join("?" * len(chunk)),
+                    chunk,
+                )
+            for key, value in (
+                ("embed_version", str(EMBED_VERSION)),
+                ("model", EMBED_MODEL),
+                ("digest", digest),
+                ("updated_at", time.strftime("%Y-%m-%dT%H:%M:%S")),
+            ):
+                conn.execute(
+                    "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value)
+                )
+            conn.commit()
+            total = conn.execute(
+                "SELECT COUNT(*), SUM(vec IS NOT NULL) FROM cards"
+            ).fetchone()
+            return {"cards": total[0] or 0, "embedded": embedded, "with_vec": total[1] or 0}
+    except sqlite3.Error:
+        return None
+
+
+def _pack(vector: list[float]) -> bytes:
+    import struct
+
+    return struct.pack(f"{len(vector)}f", *vector)
+
+
+def _unpack(blob: bytes) -> list[float]:
+    import struct
+
+    return list(struct.unpack(f"{len(blob) // 4}f", blob))
+
+
+# --- query time --------------------------------------------------------------------------
+
+
+def index_status(config: Config) -> dict:
+    """For roger doctor: mode, coverage, digest agreement."""
+    digest = model_digest(config)
+    if not VECTORS_PATH.exists():
+        return {"mode": "keyword-only", "reason": "no index", "model_present": digest is not None}
+    try:
+        with closing(_connect()) as conn:
+            meta = dict(conn.execute("SELECT key, value FROM meta"))
+            total, with_vec = conn.execute(
+                "SELECT COUNT(*), SUM(vec IS NOT NULL) FROM cards"
+            ).fetchone()
+    except sqlite3.Error:
+        return {"mode": "keyword-only", "reason": "index unreadable", "model_present": digest is not None}
+    if digest is None:
+        return {"mode": "keyword-only", "reason": "embed model not available", "model_present": False}
+    if meta.get("digest") != digest or meta.get("embed_version") != str(EMBED_VERSION):
+        return {"mode": "keyword-only", "reason": "index rebuilding (model changed)", "model_present": True}
+    return {
+        "mode": "semantic+keyword",
+        "cards": total or 0,
+        "with_vec": with_vec or 0,
+        "model_present": True,
+    }
+
+
+def semantic_rank(question: str, config: Config, top: int = 30) -> Optional[list[str]]:
+    """Node ids ranked by meaning, or None when the channel is unavailable.
+
+    Silent-fallback contract: any failure returns None (keyword-only),
+    except a digest mismatch which also returns None but marks the index
+    for rebuild — mixed embedding spaces must never be compared.
+    """
+    import os
+
+    if os.environ.get("ROGER_NO_EMBED"):  # undocumented debugging escape
+        return None
+    if not VECTORS_PATH.exists():
+        return None
+    digest = model_digest(config)
+    if digest is None:
+        return None
+    try:
+        with closing(_connect()) as conn:
+            meta = dict(conn.execute("SELECT key, value FROM meta"))
+            if meta.get("digest") != digest or meta.get("embed_version") != str(EMBED_VERSION):
+                return None  # hard-disable until refresh_index rebuilds
+            mtime = VECTORS_PATH.stat().st_mtime
+            global _matrix_cache
+            if _matrix_cache[0] != mtime:
+                rows = conn.execute(
+                    "SELECT node_id, vec FROM cards WHERE vec IS NOT NULL"
+                ).fetchall()
+                if not rows:
+                    return None
+                ids = [r[0] for r in rows]
+                vectors = [_unpack(r[1]) for r in rows]
+                try:
+                    import numpy as np
+
+                    matrix = np.array(vectors, dtype="float32")
+                    norms = np.linalg.norm(matrix, axis=1)
+                    norms[norms == 0] = 1.0
+                    matrix = matrix / norms[:, None]
+                except ImportError:
+                    matrix = vectors  # list-of-lists fallback
+                _matrix_cache = (mtime, ids, matrix)
+    except (sqlite3.Error, OSError):
+        return None
+
+    query_vecs = _embed([_QUERY_PREFIX + question], config, timeout=QUERY_DEADLINE_SECS)
+    if not query_vecs:
+        return None
+    query = query_vecs[0]
+
+    _, ids, matrix = _matrix_cache
+    try:
+        import numpy as np
+
+        q = np.array(query, dtype="float32")
+        norm = np.linalg.norm(q) or 1.0
+        sims = matrix @ (q / norm)
+        order = np.argsort(-sims)[:top]
+        return [ids[i] for i in order]
+    except ImportError:
+        qnorm = math.sqrt(sum(x * x for x in query)) or 1.0
+        scored = []
+        for node_id, vector in zip(ids, matrix):
+            vnorm = math.sqrt(sum(x * x for x in vector)) or 1.0
+            if sys.version_info >= (3, 12):
+                dot = math.sumprod(query, vector)
+            else:
+                dot = sum(a * b for a, b in zip(query, vector))
+            scored.append((dot / (qnorm * vnorm), node_id))
+        scored.sort(reverse=True)
+        return [node_id for _, node_id in scored[:top]]

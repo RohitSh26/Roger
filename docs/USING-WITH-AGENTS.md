@@ -193,6 +193,12 @@ once when the container is first built. If you already have one, chain with
   instruction (default ~2,000). The grep-and-read path for the same question
   routinely reads ten times that. Same subscription, smaller bills, faster
   answers.
+- **Better hits with smarter search on:** if you enabled smarter search (the
+  one-keypress offer when you run `roger` — see the README), context packs
+  also find code by *meaning*, so an agent asking about "rate limiting"
+  reaches the `throttle` function even though the words don't match. Nothing
+  changes in how agents call Roger; the packs just hit more often. Check
+  which mode a machine is in with `roger doctor`.
 
 ## Troubleshooting
 

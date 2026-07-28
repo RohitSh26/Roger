@@ -18,7 +18,7 @@ import webbrowser
 from pathlib import Path
 from typing import Optional
 
-from roger import activity
+from roger import activity, embeddings
 
 import requests
 import typer
@@ -120,7 +120,48 @@ def _default_flow() -> None:
     config = _load_config()
     if not Path(config.graph.path).exists():
         _offer_setup(top, config)
+    _maybe_offer_semantic(config)
     quiz(web=False, count=0)
+
+
+def _maybe_offer_semantic(config: Config, reoffer: bool = False) -> None:
+    """The once-ever smarter-search question — human TTY flows only.
+
+    Capability-sensed: the model being present IS enablement; only a
+    refusal is recorded (per machine, not per repo). Never asked in agent
+    paths (context/ask) or inside the guard hook.
+    """
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return
+    if config.model.provider == "azure-anthropic":
+        return  # no Ollama requirement on these repos; keyword-only silently
+    if embeddings.embed_prompt_declined() and not reoffer:
+        return
+    if embeddings.model_digest(config) is not None:
+        return  # already enabled by presence
+    from roger.llm.local import is_ollama_running
+
+    if not is_ollama_running(config.ollama.url):
+        return
+    if typer.confirm(
+        "Enable smarter search? Finds code by meaning, not just keywords "
+        "(~270 MB one-time download)", default=True
+    ):
+        embeddings.clear_declined()
+        try:
+            subprocess.run(
+                ["ollama", "pull", embeddings.EMBED_MODEL], check=True
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            console.print(
+                "[dim]Download didn't finish — roger doctor can retry later; "
+                "everything keeps working with keyword search.[/dim]"
+            )
+            return
+        freshness.maybe_refresh_in_background(config.graph.path, force=True)
+        console.print("[dim]Smarter search enabled — the index builds in the background.[/dim]")
+    else:
+        embeddings.record_declined()
 
 
 def _offer_setup(top: Path, config: Config) -> None:
@@ -465,6 +506,12 @@ def update(
         _fail("✗ Roger: a graph update is already running — try again in a moment.")
     try:
         result = freshness.run_update(config.graph.path)
+        # Embed step rides the same flow; never fails the graph update.
+        if result.outcome == "ok":
+            try:
+                embeddings.refresh_index(load_graph(config.graph.path), config)
+            except Exception:  # noqa: BLE001 - semantic layer must never block updates
+                pass
         if background:
             return
         if result.outcome == "ok":
@@ -560,7 +607,9 @@ ALWAYS run this BEFORE any grep/find/file-reading when exploring this codebase:
 
 It returns the relevant source (complete functions), the team's recorded
 decisions (ADRs, contracts), and call relationships in one budgeted, cited
-pack — typically far fewer tokens than raw file reading.
+pack — typically far fewer tokens than raw file reading. If the pack misses,
+re-query ONCE with likely code terms (e.g. throttle → rate limit, backoff)
+before falling back to grep.
 
 TRUST CONTRACT — the pack's code blocks are VERBATIM source, mechanically
 extracted (no AI generates them). Therefore:
@@ -656,6 +705,17 @@ def doctor() -> None:
             "roger agent install",
         )
 
+        # Retrieval mode (semantic is optional; keyword-only is never wrong)
+        status = embeddings.index_status(config)
+        if status["mode"] == "semantic+keyword":
+            checks.append(
+                ("ok", f"smarter search active ({status['with_vec']}/{status['cards']} indexed)", "")
+            )
+        else:
+            checks.append(
+                ("ok", f"search: keyword-only ({status.get('reason', '')})", "")
+            )
+
     icons = {"ok": "[green]✓[/green]", "warn": "[yellow]⚠[/yellow]", "fail": "[red]✗[/red]"}
     failed = False
     for status, finding, remedy in checks:
@@ -665,6 +725,11 @@ def doctor() -> None:
         failed = failed or status == "fail"
     if failed:
         raise typer.Exit(code=1)
+
+    # The repentance door: a machine that declined smarter search can
+    # change its mind here — doctor is already the remedy surface.
+    if top is not None and embeddings.embed_prompt_declined():
+        _maybe_offer_semantic(_load_config(), reoffer=True)
 
 
 @app.command("log")
@@ -729,6 +794,7 @@ def context(
         question=question[:200],
         budget=budget,
         tokens_served=len(pack) // 4,
+        matched="No matching code" not in pack,
         duration_ms=int((time.monotonic() - started) * 1000),
     )
     typer.echo(pack)
