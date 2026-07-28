@@ -87,6 +87,16 @@ def find_relevant_nodes(graph, question: str, top: int = MAX_CODE_MATCHES) -> li
     terms = _terms(question)
     if not terms:
         return []
+    # "Is this code?" — answered by the graph, not by an extension list.
+    # Whatever language graphify parsed produces call edges; an extension
+    # whitelist would go silent on Elixir/Dart/Lua repos. The extension
+    # check remains only as a fallback for edge-less known-code files.
+    in_calls: set[str] = set()
+    for src, dst, data in graph.edges(data=True):
+        if g._is_call_edge(data):
+            in_calls.add(src)
+            in_calls.add(dst)
+
     scores: dict[str, int] = {}
     for node_id, attrs in graph.nodes(data=True):
         display = str(attrs.get("display") or node_id)
@@ -95,10 +105,12 @@ def find_relevant_nodes(graph, question: str, top: int = MAX_CODE_MATCHES) -> li
         if not _IDENTIFIER_NAME_RE.fullmatch(display):
             continue
         file = str(attrs.get("file") or "")
-        # The CODE matcher serves code. Markdown, configs, and agent-skill
-        # files that graphify indexed must never surface here — a keyword
-        # coincidence in a skill file is noise, not context.
-        if not file or not is_source_file(file):
+        # The CODE matcher serves code: either the graph says so (call
+        # edges) or the extension does. Markdown/skill/config files that
+        # graphify indexed fail both and never surface here.
+        if not file or file.lower().endswith((".md", ".markdown")):
+            continue
+        if node_id not in in_calls and not is_source_file(file):
             continue
         if _JUNK_NODE_RE.search(node_id) or _JUNK_NODE_RE.search(display):
             continue

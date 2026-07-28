@@ -1570,3 +1570,27 @@ def test_context_pack_lists_unexpanded_matches(graph: nx.DiGraph) -> None:
     pack = ask.context_pack("payments charge card gateway refund", graph, budget_tokens=2000)
     assert "## More matches (not expanded)" in pack
     assert 're-run with its name' in pack
+
+
+def test_code_matcher_admits_unknown_languages_via_call_edges(graph: nx.DiGraph) -> None:
+    # An Elixir repo: no extension in our list, but the graph knows it's
+    # code because it participates in call edges. The bouncer must not be
+    # an extension-list luck check.
+    from roger import ask
+
+    graph.add_node(
+        "lib_ranker", display="rank_hits", file="lib/ranker.ex",
+        description="ranks search hits for the gateway",
+    )
+    graph.add_edge("payments.charge", "lib_ranker")  # relation-less = call-ish
+    top = ask.find_relevant_nodes(graph, "how are search hits ranked?", top=5)
+    assert "lib_ranker" in top
+
+    # But a markdown skill file stays out even WITH call-ish edges.
+    graph.add_node(
+        "skill_md", display="ranker_skill.md", file="agents/ranker_skill.md",
+        description="ranks search hits ranker rank rank",
+    )
+    graph.add_edge("skill_md", "payments.charge")
+    top = ask.find_relevant_nodes(graph, "how are search hits ranked?", top=5)
+    assert "skill_md" not in top
