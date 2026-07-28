@@ -7,318 +7,329 @@
 
 <!-- demo GIF of the terminal quiz goes here -->
 
-As AI coding agents write more of your code, it gets easy to ship things you don't
-actually understand. Roger intercepts that: it builds a knowledge graph of your repo,
-generates multiple-choice questions about *your actual code* with a local 1B model, and
-asks them — on demand, or as a pre-commit gate.
+AI writes more and more of your team's code. Roger makes sure the *team* still
+understands it. It reads your repository, then does three jobs:
 
-Everything runs on your machine by default — the only network calls are to Ollama on
-`localhost:11434`. Organizations that prefer their approved cloud can opt in, per
-repository, to routing question generation through an Azure AI Foundry Anthropic
-deployment instead (see below); nothing else ever leaves the machine.
+- **Quizzes you** on your own code and your team's written decisions — short,
+  fair, multiple-choice, built to teach rather than test memory.
+- **Answers questions** about the codebase, with the source and documents it
+  used cited underneath.
+- **Briefs AI coding agents** so they stop burning tokens reading whole files.
 
-## Requirements
+Everything runs on your computer by default. Nothing is uploaded anywhere.
 
-| Requirement | Notes |
-|---|---|
-| Python 3.10+ | |
-| [Ollama](https://ollama.ai) | Must be installed and running: `ollama serve` |
-| ~1.2 GB disk | For the local model (MiniCPM5-1B, Q8_0), downloaded once |
+---
 
-The knowledge-graph engine ([graphify](https://pypi.org/project/graphifyy/)) is a normal
-pip dependency and installs automatically.
+## New to the terminal? Read this box first
 
-## Install
+Everything below happens in the **terminal** (the app called *Terminal* on a Mac).
+A few conventions so nothing surprises you:
+
+- Lines shown in code blocks are commands. Type them (or paste them) and press
+  **Return**. Don't type the `$` if you see one — it just represents the prompt.
+- Words starting with a dash, like `--web` or `-n`, are **options** (also called
+  flags). They tweak how a command behaves. We explain every one we use.
+- "Run this from your repository" means: use `cd` to go into your project's
+  folder first, e.g. `cd ~/work/payments-service`.
+
+That's all you need.
+
+---
+
+## Setting up (once per computer, about 5 minutes)
+
+**1. You need Python 3.10 or newer.** Check with:
+
+```bash
+python3 --version
+```
+
+**2. You need Ollama** — a free Mac/Windows/Linux app that runs AI models
+privately on your own machine. Download it from [ollama.ai](https://ollama.ai),
+open it once, and leave it running. (If your company uses the Azure setup
+instead, you can skip Ollama entirely — see "Where the AI runs" below.)
+
+**3. Install Roger:**
 
 ```bash
 pip install git+https://github.com/RohitSh26/Roger.git
 ```
 
-Or for hacking on Roger itself:
+`pip` is Python's installer; this tells it to fetch Roger straight from GitHub.
+
+---
+
+## Using Roger (this is most of the manual)
+
+Go to your project and type one word:
 
 ```bash
-git clone https://github.com/RohitSh26/Roger.git
-cd Roger
-pip install -e ".[dev]"
+roger
 ```
 
-## Quick start
+**The first time** in a repository, Roger asks a single question:
 
-From the root of the repository you want to be quizzed on:
+```
+First time here — set up Roger for 'payments-service'? [Y/n]:
+```
+
+Press **Return** to accept. Roger then builds its map of your code (usually
+under a minute), downloads its small AI model if needed (~1.2 GB, one time
+per computer), and starts your first quiz. It tells you beforehand if your
+repository is unusually large or a download is coming — no surprises.
+
+**Every time after that**, `roger` simply starts a five-question quiz:
+
+```
+╭─ Question 2 of 5 | process_payment (src/payments/processor.py) ─────╮
+│ Why does process_payment validate the card before opening a         │
+│ gateway session, rather than after?                                 │
+│                                                                     │
+│    1  def process_payment(order, card):        ← the real code,     │
+│    2      if not validate_card(card):            shown so you can   │
+│    3          return Declined("invalid card")    reason, not recall │
+│                                                                     │
+│   A) To fail fast before paying for a gateway round-trip            │
+│   B) Because the gateway rejects unvalidated cards                  │
+│   C) To keep the audit log ordered                                  │
+│   D) To retry validation on gateway errors                          │
+╰──────────────────────────────────────────────────────────────────────╯
+```
+
+Press **A**, **B**, **C**, or **D** — just the letter, no Return needed. You
+get the answer and a short explanation immediately, right or wrong. Questions
+are drawn from your actual code, your team's own documents (design decisions,
+contracts), and your system's architecture. Your scores stay on your machine,
+in your repository's `.roger` folder. They are yours — Roger has no dashboard
+for managers and never will.
+
+Two options when you want them:
 
 ```bash
-roger                 # that's it — first run sets everything up, then quizzes you
-roger guard install   # optional: quiz on staged changes before every commit
+roger -n 10        # a longer session: -n means "number of questions"
+roger quiz --web   # take the quiz in your browser instead — nicer for
+                   # reading code, with syntax colors and diagrams
 ```
 
-`roger init` does all the setup: runs graphify over your code (local AST, no API key),
-registers the `roger-local` model in Ollama (the Modelfile ships inside Roger and is
-written to `.roger/Modelfile`; the ~1.2 GB model weights download the first time ever),
-and creates `.roger/` with a default config and databases. If anything is missing it
-tells you exactly what to run.
-
-## Keeping everything up to date
-
-There are three different things that can go stale. Here's the fix for each:
-
-### 1. Getting the latest Roger (after Roger itself changes)
-
-A plain `pip install git+…` will say "Requirement already satisfied" and give you
-**nothing** — the version number doesn't change between pushes, so pip thinks it's
-current. Always update with:
+The browser quiz ends by showing a short code like `BCADB` (your answers).
+To save that session into your history, copy the command it shows you:
 
 ```bash
-pip install --force-reinstall --no-deps git+https://github.com/RohitSh26/Roger.git
+roger record BCADB
 ```
 
-Run that in every venv where Roger is installed. Verify what you got — the
-version bumps with every meaningful change, so this confirms the update landed:
+---
+
+## Asking questions
 
 ```bash
-pip show roger-cli | grep Version
+roger ask "why do we retry payments exactly twice?"
 ```
 
-### 2. After updating Roger: refresh the registered model
-
-If a Roger update changed the model's system prompt (release notes will say so),
-re-register the model once per machine:
+Roger finds the relevant code and documents, has its AI model read them, and
+gives you an answer **with the sources listed underneath** so you can verify
+it. Add `--web` to get the answer as a nicely formatted page in your browser:
 
 ```bash
-cd your-repo
-roger init      # safe to re-run: rewrites .roger/Modelfile, re-registers the
-                # model, rebuilds the graph; never overwrites your config.toml
+roger ask "how does search ranking work?" --web
 ```
 
-### 3. When your own code changes: Roger keeps itself fresh
+If Roger can't find anything relevant, it says so plainly — it does not guess.
 
-Quiz sessions detect changed source files and refresh the graph in the
-background while you answer — you shouldn't need to think about it. When you
-want an explicit refresh (or the background one reports it needs help after
-big deletions), one command finishes the job, confirmations included:
+---
+
+## The commit guard (optional, recommended)
+
+A "pre-commit hook" is a small check that git runs automatically right before
+each commit is saved. Roger's guard quizzes you briefly on the files you're
+about to commit — the point where understanding matters most. Set it up once:
+
+```bash
+roger guard install
+```
+
+From then on, `git commit` first shows you a few questions about your staged
+changes. Pass (3 of 5 by default) and the commit proceeds. Genuinely busy?
+There's an honest skip:
+
+```bash
+ROGER_SKIP=1 git commit -m "wip"
+```
+
+That skips the quiz and notes the skip in your own local history — no shame,
+just a record for you. Remove the guard anytime with `roger guard uninstall`.
+
+---
+
+## Staying current — you mostly don't have to think about it
+
+Roger's map of your code refreshes itself in the background while you take
+quizzes. If it ever needs a hand (for example after deleting a lot of code),
+it tells you in one line, and one command finishes the job — including asking
+you before anything drastic:
 
 ```bash
 roger update
 ```
 
-Cached questions take care of themselves: keys include the exact source text,
-the difficulty, and the model, so changed code always regenerates and
-unchanged code stays instant — including across model switches.
+---
 
-## Commands
+## Where the AI runs (one-time choice per repository)
+
+Roger's question-writing and answering need an AI model. You have two options,
+and switching between them is one command — no files to edit:
+
+**Option 1 — your own computer (the default).** Private, free, works offline.
+Roger sets this up automatically. Want a smarter local model and have ~5 GB
+of memory to spare? Pull one and point Roger at it:
+
+```bash
+ollama pull qwen2.5:7b-instruct-q4_K_M
+roger use ollama --model qwen2.5:7b-instruct-q4_K_M
+```
+
+**Option 2 — your company's Azure (for enterprises).** If your organization
+provides Claude through Azure AI Foundry, ask your platform team for two
+values — an *endpoint* (a URL) and a *deployment name* — then:
+
+```bash
+roger use azure --endpoint https://YOUR-RESOURCE.services.ai.azure.com/anthropic --deployment YOUR-DEPLOYMENT-NAME
+export AZURE_ANTHROPIC_API_KEY="your-key-here"
+```
+
+About that second line: `export` sets an *environment variable* — a value that
+lives only in your terminal session, never in a file. That's deliberate: files
+get committed to git; your key must not be. To avoid retyping it, add that
+line to the file `~/.zshrc` (your terminal's startup file).
+
+**Know before enabling Azure for a team:** with this option, the code and doc
+excerpts Roger builds questions from are sent to *your company's own Azure*
+— not to Roger, not to anyone else. The default option sends nothing anywhere.
+
+---
+
+## For teams
+
+- Commit the `.roger/cache.db` file to your repository and teammates share the
+  question pool — questions stay valid until the code they cover changes.
+- Commit `.roger/config.toml` too and your repo's settings (model choice,
+  question count) arrive with `git clone`. The Azure key is never in a file,
+  so this is safe.
+- Quiz history (`.roger/history.db`) is personal. Add it to `.gitignore`.
+
+---
+
+## For AI coding agents (OpenCode, Copilot, Claude Code, Cursor…)
+
+Agents waste enormous token budgets grepping and reading whole files. Roger
+fixes that with one command, run once per repository:
+
+```bash
+roger agent install
+```
+
+This writes a short instruction into the files agents already read
+(`AGENTS.md`, `CLAUDE.md`): *before exploring, run `roger context`*. From then
+on your agents call:
+
+```bash
+roger context "how is authentication checked?" --budget 2000
+```
+
+…and receive a compact, cited briefing — the relevant functions in full, the
+design decisions behind them, who-calls-what — capped at roughly the token
+budget you set (`--budget 2000` ≈ 2,000 tokens). Two things worth knowing:
+
+- **It uses no AI at all.** Roger looks things up; *your agent's own model*
+  does the thinking — on whatever subscription and model you already picked
+  in the agent. Roger needs no key and adds no cost.
+- **You can see exactly what your agent saw** by running the same command
+  yourself. No black box.
+
+No server to run, nothing to configure in the agent. Undo anytime with
+`roger agent uninstall`.
+
+---
+
+## Every command, in one place
 
 | Command | What it does |
 |---|---|
-| `roger init` | One-time setup for a repo: graph build, model registration, config |
-| `roger quiz` | Whole-repo quiz using the settings in `.roger/config.toml` |
-| `roger quiz -n 10` | Override the session size (default: `questions_per_session` in config) |
-| `roger quiz --web` | Take the quiz in the browser: highlighted code, keyboard shortcuts |
-| `roger record <CODE>` | Record a finished web session (the page shows the code) |
-| `roger ask "…"` | Ask a question about the codebase — answered from graph, source, and docs, with cited sources |
-| `roger ask "…" --web` | Same answer rendered in the browser: formatted markdown, highlighted code, diagrams |
-| `roger use azure` / `roger use ollama` | Switch the generation backend — writes config for you, applies to quiz, `--web`, guard, and ask |
-| `roger update` | Refresh the knowledge graph now (background refresh usually handles it) |
-| `roger context "…"` | Budgeted, cited context pack for coding agents (zero LLM calls) |
-| `roger agent install` | Teach agents in this repo to use Roger instead of grep/read |
-| `roger guard` | Run the quiz on currently staged files (what the hook runs) |
-| `roger guard install` | Write the pre-commit hook to `.git/hooks/pre-commit` |
-| `roger guard uninstall` | Remove the hook (only if Roger installed it) |
+| `roger` | The main event: sets up on first run, then quizzes you |
+| `roger -n 10` | Quiz with a custom number of questions |
+| `roger quiz --web` | The quiz, in your browser |
+| `roger record BCADB` | Save a finished browser quiz to your history |
+| `roger ask "…"` | Answer a question about the codebase, with sources |
+| `roger ask "…" --web` | The same answer, formatted in your browser |
+| `roger context "…"` | A cited briefing for AI agents (no AI used) |
+| `roger agent install` | Teach agents in this repo to use Roger |
+| `roger guard install` | Quiz on staged changes before every commit |
+| `roger update` | Refresh Roger's map of your code by hand |
+| `roger use ollama` / `roger use azure …` | Choose where the AI runs |
+| `roger init` | Set up manually (bare `roger` does this for you) |
 
-Planned (not yet built): `roger chat`, `roger report`, `roger update`,
-`roger status`, and quiz scoping flags (`--module`, `--since`, `--difficulty`).
+---
 
-## For coding agents — no MCP, no server
+## When something goes wrong
 
-Agents that can run shell commands (Claude Code, OpenCode, Copilot, Codex,
-Cursor, Aider) integrate with one command and one instruction:
+Every Roger error tells you the fix, but here are the common ones:
 
-```bash
-roger agent install     # writes a short section into AGENTS.md (+ CLAUDE.md if present)
-```
+**"Ollama is not running"** — open the Ollama app (or run `ollama serve` in
+another terminal window and leave it open).
 
-From then on, agents run `roger context "<question>" --budget 2000` before
-grepping or reading whole files, and receive a budgeted, cited pack: complete
-source blocks, the team's recorded decisions (ADRs, contracts), and call
-relationships. Zero LLM calls — Roger retrieves, the agent reasons — so packs
-are instant and work with no model backend at all. Humans can run the exact
-same command to see exactly what the agent saw.
+**"Model 'roger-local' not found"** — run `roger init` once; it registers the
+model for you.
 
-## Azure AI Foundry (Anthropic) — optional enterprise backend
+**"No knowledge graph found"** — run `roger` in the repository; first-run
+setup builds it.
 
-For teams whose approved AI path is their Azure tenant rather than local models,
-Roger can route question generation through a Claude deployment on Azure AI Foundry:
+**"unknown model provider"** — there's a typo in `.roger/config.toml`. The
+error lists the valid values; or just run `roger use ollama` to reset it.
 
-```bash
-roger use azure \
-  --endpoint https://<your-resource>.services.ai.azure.com/anthropic \
-  --deployment <your-claude-deployment-name>
-export AZURE_ANTHROPIC_API_KEY="..."   # environment only — never in config files
-roger quiz            # or quiz --web, guard, ask — same backend everywhere
-```
+**Questions feel slow the first time** — first-time questions are written by
+the AI model (a few seconds each); repeats are instant because Roger caches
+questions until the code they cover changes.
 
-Switch back anytime with `roger use ollama` (your Azure settings are kept for the
-next switch). Both commands write `.roger/config.toml` for you; if you edit it by
-hand instead, misspelled providers are a hard error and misplaced keys warn —
-nothing falls back silently.
+---
 
-Everything else works identically: same question categories, same validators, same
-caching. With this provider Ollama is not needed at all (`roger init` skips it).
+## Updating Roger itself
 
-**Privacy — read this before enabling for a team:** with the Azure provider, quiz
-prompts leave the machine for your Azure tenant. Prompts contain source-code
-excerpts, documentation excerpts, and the module map — including staged changes
-when the guard hook runs at commit time. The default (`provider = "ollama"`)
-remains fully local. Constructed questions (docs, cloze answers, mutants) are
-built locally either way.
-
-## What a session asks
-
-Each session mixes question categories, split automatically from the session
-size (so `questions_per_session = 9` scales the mix, nothing is hardcoded):
-
-1. **Decisions & docs** — constructed from ADRs, contracts, and tables in your
-   `docs/` (instant, no LLM). These open the session.
-2. **Code comprehension** — the local model asks about real source shown next
-   to the question: behavior, purpose, design intent, plus fill-in-the-blank
-   lines whose correct answer is the real code.
-3. **System design** — a module map built from the code graph (who owns what,
-   who calls across boundaries) with reasoning questions about ownership,
-   boundaries, and coupling. Closes the session.
-4. **Change resilience** (hard difficulty only) — spot the behavioral
-   alteration in otherwise-real code.
-
-## The guard workflow
-
-After `roger guard install`, every `git commit` quizzes you on the staged files first:
-
-- Files the graph doesn't know about (docs, configs) pass through silently.
-- Score at or above `pass_threshold` → the commit proceeds.
-- Below → the commit is blocked (or warned, if you set `block_on_fail = false`).
-
-When you legitimately need to skip:
+When a new version ships, run:
 
 ```bash
-ROGER_SKIP=1 git commit -m "wip"   # skips the quiz; the skip is logged to history
-git commit --no-verify             # git-native bypass; invisible to Roger
+pip install --force-reinstall --no-deps git+https://github.com/RohitSh26/Roger.git
 ```
 
-Skips are never punished — they're just recorded, so you can see your own pattern.
-
-## Configuration
-
-`roger init` writes `.roger/config.toml` with these defaults:
-
-```toml
-[model]
-local = "roger-local"        # any locally pulled Ollama model (see below)
-
-[ollama]
-url = "http://localhost:11434"
-num_ctx = 8192       # context window; raising it feeds the model a larger
-                     # code neighborhood at the cost of RAM and speed
-
-[quiz]
-default_difficulty = "medium"   # simple | medium | hard
-questions_per_session = 5
-pass_threshold = 3              # correct answers needed to pass
-
-[guard]
-enabled = true
-difficulty = "medium"
-block_on_fail = true            # false = warn but never block commits
-
-[graph]
-path = "graphify-out/graph.json"
-god_node_weight = true          # bias questions toward high-connectivity code
-```
-
-## Using a different Ollama model
-
-Roger defaults to `roger-local` (MiniCPM5-1B) because it's small, fast, and tuned via
-its Modelfile to emit quiz JSON. But any model in your local Ollama works — pull it,
-then point the config at it:
+(The extra options force pip to fetch the newest code; plain `pip install`
+would wrongly say you're up to date.) Check what you have:
 
 ```bash
-ollama pull llama3.2:3b
+pip show roger-cli | grep Version
 ```
 
-```toml
-# .roger/config.toml
-[model]
-local = "llama3.2:3b"
-```
+---
 
-That's it — `roger quiz` and `roger guard` now use that model. Notes:
+## Our promises
 
-- **The model must already be pulled.** For a custom model, `roger init` verifies it
-  exists instead of creating it (so your model tag is never touched); if it's missing,
-  Roger tells you the exact `ollama pull` command.
-- **Config is per-repo**, so different repos can use different models.
-- **Bigger models generally write better questions** (and slower ones). The model needs
-  to follow "respond with JSON only" instructions reliably; most instruct-tuned models
-  3B+ are fine. Still local-only: Roger never calls anything beyond `localhost:11434`.
+1. **Never waste your time.** One word to use it. First question in seconds.
+   Honest skips.
+2. **Never lie to you.** Most question types are built so the correct answer
+   is copied from your own code or docs — it *cannot* be wrong. AI-written
+   questions pass seven validation checks before you ever see them.
+3. **Never surveil you.** Scores live on your machine, period. By default,
+   nothing about your code leaves your computer.
 
-## How it works
+---
 
-```
-your repo ──graphify──▶ graphify-out/graph.json     (nodes, call edges, communities)
-                              │
-                     roger picks nodes (god nodes first)
-                              │
-              ┌── difficulty: simple ──▶ Tier 0: template questions (no LLM, instant)
-              └── medium / hard ───────▶ Tier 1: local Ollama (MiniCPM5-1B)
-                              │
-                    .roger/cache.db  (questions keyed by SHA-256 of the code's
-                              │       graph neighborhood — unchanged code = cache hit)
-                        terminal quiz
-                              │
-                    .roger/history.db  (sessions, answers, skips)
-```
-
-- **Tier 0 (simple):** structural questions built straight from the graph — "which of
-  these calls `X`?", "in which file is `Y` defined?" — with distractors drawn from the
-  same code community so they're plausible.
-- **Tier 1 (medium/hard):** the local model receives the node plus its 1-hop
-  neighborhood and writes comprehension questions about behavior and design.
-- **Caching:** questions are keyed by a hash of the node and its neighborhood. Unchanged
-  code never regenerates; changed code automatically gets fresh questions. You can commit
-  `.roger/cache.db` so your team shares one question pool.
-
-## Troubleshooting
-
-**`Ollama is not running`** — start it with `ollama serve` (leave it running).
-
-**`Model 'roger-local' not found in Ollama`** — run `roger init`, or manually:
-`ollama create roger-local -f .roger/Modelfile` (init writes that file; the Modelfile
-ships embedded inside Roger, so no checkout is needed).
-
-**`No knowledge graph found`** — run `roger init` in the repo root. After large
-refactors, re-run it (or `graphify ./ --code-only`) to rebuild the graph.
-
-**Questions feel slow to generate** — first quiz on a set of nodes calls the local model
-(a few seconds per node); repeat quizzes hit the cache and are instant.
-
-**Odd or trivial questions** — a fully local 1B model has limits; question quality
-tuning is active work. Tier 0 (`default_difficulty = "simple"`) is deterministic if you
-want purely structural questions.
-
-## Development
+## For contributors
 
 ```bash
 git clone https://github.com/RohitSh26/Roger.git && cd Roger
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-pytest            # no Ollama or graphify needed — everything external is mocked
+pytest            # no Ollama needed — everything external is mocked
 ruff check roger/ tests/
 ```
 
-Project layout and the full technical spec live in [ROGER_SPEC.md](ROGER_SPEC.md).
-
-## Status
-
-Phase 1 (MVP) is complete and field-tested: init, quiz, guard hook, both question
-tiers, caching, and history. Phases 2–3 (dashboard, ask/chat mode, quiz scoping flags,
-incremental graph updates) are on the roadmap in the spec.
-
-## License
-
-[MIT](LICENSE)
+Full technical details live in [ROGER_SPEC.md](ROGER_SPEC.md) and the design
+rules in [CLAUDE.md](CLAUDE.md). License: [MIT](LICENSE).
