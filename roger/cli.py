@@ -560,9 +560,16 @@ ALWAYS run this BEFORE any grep/find/file-reading when exploring this codebase:
 
 It returns the relevant source (complete functions), the team's recorded
 decisions (ADRs, contracts), and call relationships in one budgeted, cited
-pack — typically far fewer tokens than raw file reading. Only fall back to
-grep/read for details the pack did not cover. For a directly answered
-question with citations, use `roger ask "<question>"` instead.
+pack — typically far fewer tokens than raw file reading.
+
+TRUST CONTRACT — the pack's code blocks are VERBATIM source, mechanically
+extracted (no AI generates them). Therefore:
+- For read-only questions: answer directly from the pack. Do NOT re-read
+  files whose relevant lines the pack already shows — that read returns
+  byte-identical text and only wastes tokens.
+- DO read the actual files when you are about to MODIFY code, when a claim
+  lacks a citation, when citations conflict, or when the pack says it was
+  truncated.
 {AGENT_SNIPPET_END}"""
 
 agent_app = typer.Typer(help="Teach coding agents to use Roger (no MCP, no server).")

@@ -178,7 +178,15 @@ def context_pack(
             "No matching code or docs found. Try naming a function, class, "
             "file, or doc topic — or the graph may need `roger update`."
         )
-    pack = f"# Roger context: {question}\n\n{context}\n\n## Sources\n" + "\n".join(
+    # Self-declared provenance: agents fact-check unverified summaries (as
+    # they should) — so state plainly that these excerpts are mechanical
+    # copies, making a re-read of the same lines provably redundant.
+    provenance = (
+        "> Provenance: code and doc excerpts below are VERBATIM file contents, "
+        "mechanically extracted just now — not AI-generated summaries. "
+        "Re-reading the cited lines returns identical text.\n\n"
+    )
+    pack = f"# Roger context: {question}\n\n{provenance}{context}\n\n## Sources\n" + "\n".join(
         f"- {s}" for s in sources
     )
     if len(pack) > max_chars:

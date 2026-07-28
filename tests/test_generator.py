@@ -1530,3 +1530,19 @@ def test_doctor_reports_and_remedies(tmp_path, monkeypatch, capsys) -> None:
     out = capsys.readouterr().out
     assert "not inside a git repository" in out
     assert "setuptools" in out  # environment checks always run
+
+
+def test_context_pack_declares_provenance(graph: nx.DiGraph) -> None:
+    from roger import ask
+
+    pack = ask.context_pack("What charges the card?", graph, budget_tokens=2000)
+    assert "VERBATIM" in pack           # self-declared provenance up top
+    assert "not AI-generated" in pack
+
+
+def test_agent_snippet_carries_trust_contract() -> None:
+    from roger.cli import AGENT_SNIPPET
+
+    assert "TRUST CONTRACT" in AGENT_SNIPPET
+    assert "VERBATIM" in AGENT_SNIPPET
+    assert "MODIFY" in AGENT_SNIPPET    # verification still required for writes
