@@ -1516,3 +1516,17 @@ def test_agent_install_covers_copilot_vscode(tmp_path, monkeypatch) -> None:
     cli.agent_uninstall()
     assert not copilot.exists()          # fully removed when Roger-only
     assert not Path("AGENTS.md").exists()
+
+
+def test_doctor_reports_and_remedies(tmp_path, monkeypatch, capsys) -> None:
+    import typer
+
+    from roger import cli, freshness
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(freshness, "repo_root", lambda: None)
+    with pytest.raises(typer.Exit):
+        cli.doctor()  # not a git repo → fail status, exit 1
+    out = capsys.readouterr().out
+    assert "not inside a git repository" in out
+    assert "setuptools" in out  # environment checks always run

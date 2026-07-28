@@ -569,6 +569,97 @@ agent_app = typer.Typer(help="Teach coding agents to use Roger (no MCP, no serve
 app.add_typer(agent_app, name="agent")
 
 
+@app.command()
+def doctor() -> None:
+    """Check this environment and print the fix for anything wrong.
+
+    Run this first whenever Roger misbehaves on a new machine, container,
+    or Codespace — it knows the common failure modes and their one-line
+    remedies.
+    """
+    checks: list[tuple[str, str, str]] = []  # (status, finding, remedy)
+
+    def check(ok: Optional[bool], good: str, bad: str, remedy: str = "") -> None:
+        if ok is True:
+            checks.append(("ok", good, ""))
+        elif ok is False:
+            checks.append(("fail", bad, remedy))
+        else:
+            checks.append(("warn", bad, remedy))
+
+    # Environment
+    py = f"{sys.version_info.major}.{sys.version_info.minor}"
+    in_container = Path("/.dockerenv").exists() or os.environ.get("REMOTE_CONTAINERS")
+    checks.append(("ok", f"Python {py}" + (" (inside a container)" if in_container else ""), ""))
+    check(
+        True if importlib.util.find_spec("setuptools") is not None else None,
+        "setuptools present (legacy package builds will work)",
+        "setuptools missing — if a package ever builds from source here "
+        "(common in containers), it can fail with \"No module named 'distutils'\"",
+        "pip install --upgrade pip setuptools wheel",
+    )
+    check(
+        importlib.util.find_spec("graphify") is not None,
+        "graphify installed",
+        "graphify missing (needed to build/update the code map)",
+        "pip install graphifyy",
+    )
+
+    # Repository + graph
+    top = freshness.repo_root()
+    check(top is not None, f"git repository: {top.name if top else ''}",
+          "not inside a git repository", "cd into your project and re-run")
+    if top is not None:
+        os.chdir(top)
+        config = _load_config()
+        graph_exists = Path(config.graph.path).exists()
+        check(graph_exists, "code map present (graphify-out/graph.json)",
+              "no code map yet", "run: roger   (first-run setup builds it)")
+        if graph_exists:
+            stale = freshness.stale_source_files(config.graph.path)
+            check(
+                not stale,
+                "code map is current",
+                f"code map is behind ({len(stale)} changed source file(s))",
+                "roger update   (quiz sessions also refresh it automatically)",
+            )
+
+        # Backend (matters for ask/quiz; roger context needs none)
+        if config.model.provider == "azure-anthropic":
+            check(bool(os.environ.get(AZURE_API_KEY_ENV)),
+                  f"Azure backend configured ('{config.model.azure_deployment}')",
+                  f"Azure selected but {AZURE_API_KEY_ENV} is not set",
+                  f"export {AZURE_API_KEY_ENV}=…")
+        else:
+            from roger.llm.local import is_ollama_running
+
+            check(
+                is_ollama_running(config.ollama.url) or None,
+                f"Ollama reachable ({config.ollama.url})",
+                f"Ollama not reachable at {config.ollama.url} — quizzes and "
+                "'roger ask' need it; 'roger context' works without it",
+                "open the Ollama app (or: ollama serve)",
+            )
+
+        # Agent integration
+        check(
+            Path("AGENTS.md").exists() or Path(".github/copilot-instructions.md").exists() or None,
+            "agent instructions installed",
+            "no agent instructions in this repo (fine unless you use AI agents)",
+            "roger agent install",
+        )
+
+    icons = {"ok": "[green]✓[/green]", "warn": "[yellow]⚠[/yellow]", "fail": "[red]✗[/red]"}
+    failed = False
+    for status, finding, remedy in checks:
+        console.print(f"{icons[status]} {escape(finding)}")
+        if remedy:
+            console.print(f"   → {escape(remedy)}")
+        failed = failed or status == "fail"
+    if failed:
+        raise typer.Exit(code=1)
+
+
 @app.command("log")
 def show_log(
     limit: int = typer.Option(20, "--limit", "-l", help="How many recent events to show."),

@@ -131,6 +131,16 @@ installed on your Mac — including Roger — don't exist inside it, which is wh
 the agent's terminal says `roger: command not found` even though `roger` works
 in your regular terminal.
 
+**First move in any broken environment:**
+
+```bash
+roger doctor
+```
+
+It checks the environment (Python, setuptools, the code map, the model
+backend, agent files) and prints the exact fix for anything wrong. If `roger`
+itself isn't installed yet, continue below.
+
 **Immediate fix** — install Roger inside the container (open the container's
 terminal in VS Code and run):
 
