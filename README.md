@@ -288,6 +288,11 @@ model for you.
 **"No knowledge graph found"** — run `roger` in the repository; first-run
 setup builds it.
 
+**"command not found: roger" inside a dev container or Codespace** — the
+container is a separate computer; install Roger inside it too. One-line fix
+and the automatic version are in
+[docs/USING-WITH-AGENTS.md](docs/USING-WITH-AGENTS.md#dev-containers-and-github-codespaces).
+
 **"unknown model provider"** — there's a typo in `.roger/config.toml`. The
 error lists the valid values; or just run `roger use ollama` to reset it.
 

@@ -124,6 +124,47 @@ would call grep — you'll see the command in its activity log.
 
 ---
 
+## Dev containers and GitHub Codespaces
+
+A dev container is, for all practical purposes, **a separate computer**. Tools
+installed on your Mac — including Roger — don't exist inside it, which is why
+the agent's terminal says `roger: command not found` even though `roger` works
+in your regular terminal.
+
+**Immediate fix** — install Roger inside the container (open the container's
+terminal in VS Code and run):
+
+```bash
+pip install git+https://github.com/RohitSh26/Roger.git
+```
+
+**Durable fix** — make it automatic for every rebuild and every teammate. Add
+one line to your `.devcontainer/devcontainer.json`:
+
+```json
+"postCreateCommand": "pip install git+https://github.com/RohitSh26/Roger.git"
+```
+
+(`postCreateCommand` is a standard dev-container setting: commands that run
+once when the container is first built. If you already have one, chain with
+`&&`.)
+
+**Two container-specific notes:**
+
+- **The agent path needs no AI model at all.** `roger context` is pure lookup,
+  so inside a container you don't need Ollama — just Roger and the code map.
+  If your container mounts your working folder (the default for local dev
+  containers), the map (`graphify-out/`) is already there. In a fresh clone
+  (Codespaces), build it once with `graphify ./ --code-only` — graphify
+  installs alongside Roger, and this needs no model either. Add it to
+  `postCreateCommand` to automate.
+- **Human features (`roger ask`, quizzes) need a model the container can
+  reach.** Either your company's Azure setup (works anywhere), or point the
+  container at Ollama running on your host machine:
+  `roger use ollama` and set `url = "http://host.docker.internal:11434"`
+  under `[ollama]` in `.roger/config.toml` — that special hostname is how
+  containers reach the machine they run on.
+
 ## How to tell it's working (and worth it)
 
 - **See what your agent saw:** run the identical command yourself —
