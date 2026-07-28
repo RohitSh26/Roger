@@ -267,6 +267,7 @@ nothing to configure in the agent. Undo anytime with `roger agent uninstall`.
 | `roger ask "…" --web` | The same answer, formatted in your browser |
 | `roger context "…"` | A cited briefing for AI agents (no AI used) |
 | `roger agent install` | Teach agents in this repo to use Roger |
+| `roger log` | See what was recently asked of Roger — including by your agents |
 | `roger guard install` | Quiz on staged changes before every commit |
 | `roger update` | Refresh Roger's map of your code by hand |
 | `roger use ollama` / `roger use azure …` | Choose where the AI runs |

@@ -13,9 +13,12 @@ import random
 import shutil
 import subprocess
 import sys
+import time
 import webbrowser
 from pathlib import Path
 from typing import Optional
+
+from roger import activity
 
 import requests
 import typer
@@ -549,20 +552,56 @@ def use(
 AGENT_SNIPPET_START = "<!-- roger:start -->"
 AGENT_SNIPPET_END = "<!-- roger:end -->"
 AGENT_SNIPPET = f"""{AGENT_SNIPPET_START}
-## Roger — token-efficient code context
+## Roger — token-efficient code context (use this FIRST)
 
-Before exploring this codebase with grep/find or by reading whole files, run:
+ALWAYS run this BEFORE any grep/find/file-reading when exploring this codebase:
 
     roger context "<your question>" --budget 2000
 
 It returns the relevant source (complete functions), the team's recorded
 decisions (ADRs, contracts), and call relationships in one budgeted, cited
-pack — typically far fewer tokens than raw file reading. For a direct
-answered question with citations, use `roger ask "<question>"` instead.
+pack — typically far fewer tokens than raw file reading. Only fall back to
+grep/read for details the pack did not cover. For a directly answered
+question with citations, use `roger ask "<question>"` instead.
 {AGENT_SNIPPET_END}"""
 
 agent_app = typer.Typer(help="Teach coding agents to use Roger (no MCP, no server).")
 app.add_typer(agent_app, name="agent")
+
+
+@app.command("log")
+def show_log(
+    limit: int = typer.Option(20, "--limit", "-l", help="How many recent events to show."),
+) -> None:
+    """Show what was recently asked of Roger — including by your AI agents.
+
+    The log lives locally at .roger/activity.log (JSONL). It records
+    machinery, never people: what was requested, tokens served, duration.
+    """
+    _anchor_repo_root()
+    events = activity.read_recent(limit)
+    if not events:
+        console.print("No activity yet — it appears here once roger context/ask are used.")
+        return
+    from rich.table import Table
+
+    table = Table(box=None, header_style="bold")
+    table.add_column("when")
+    table.add_column("command")
+    table.add_column("caller")
+    table.add_column("question")
+    table.add_column("tokens", justify="right")
+    table.add_column("ms", justify="right")
+    for event in events:
+        table.add_row(
+            str(event.get("ts", "")),
+            str(event.get("command", "")),
+            str(event.get("caller", "")),
+            escape(str(event.get("question", ""))[:60]),
+            str(event.get("tokens_served", "—")),
+            str(event.get("duration_ms", "—")),
+        )
+    console.print(table)
 
 
 @app.command()
@@ -585,7 +624,16 @@ def context(
         return
     freshness.maybe_refresh_in_background(config.graph.path)
     # Plain stdout — agents consume this; no panels, no colors.
-    typer.echo(context_pack(question, graph, config, budget_tokens=budget))
+    started = time.monotonic()
+    pack = context_pack(question, graph, config, budget_tokens=budget)
+    activity.log_event(
+        "context",
+        question=question[:200],
+        budget=budget,
+        tokens_served=len(pack) // 4,
+        duration_ms=int((time.monotonic() - started) * 1000),
+    )
+    typer.echo(pack)
 
 
 def _install_snippet(path: Path) -> str:
@@ -662,12 +710,19 @@ def ask(
         _fail(str(exc))
         return
 
+    started = time.monotonic()
     with console.status("[dim]Reading the codebase…[/dim]"):
         try:
             answer, sources = answer_question(question, graph, config)
         except (OllamaNotRunningError, ModelNotRegisteredError, CloudBackendError, ValueError) as exc:
             _fail(str(exc))
             return
+    activity.log_event(
+        "ask",
+        question=question[:200],
+        sources=len(sources),
+        duration_ms=int((time.monotonic() - started) * 1000),
+    )
 
     if web:
         page = render_ask_html(question, answer, sources)

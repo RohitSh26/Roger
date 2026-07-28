@@ -299,3 +299,33 @@ def test_stale_source_files_is_content_based(monkeypatch, tmp_path) -> None:
 
     monkeypatch.setattr(freshness, "_git", fake_git)
     assert freshness.stale_source_files(str(graph)) == ["src/a.py", "src/b.py"]
+
+
+# --- activity log (local observability) ---------------------------------------------
+
+
+def test_activity_log_roundtrip_and_caller_detection() -> None:
+    from roger import activity
+
+    activity.log_event("context", question="how is auth checked?", tokens_served=812)
+    activity.log_event("ask", question="why L0-L3?", sources=4)
+    events = activity.read_recent(10)
+    assert len(events) == 2
+    assert events[0]["command"] == "ask"          # newest first
+    assert events[1]["tokens_served"] == 812
+    # Under pytest stdout is not a TTY — recorded as an agent/script caller.
+    assert events[0]["caller"] == "agent/script"
+
+
+def test_activity_log_rotates_and_never_raises(monkeypatch) -> None:
+    from roger import activity
+
+    activity.ACTIVITY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    activity.ACTIVITY_PATH.write_text("x" * 2_100_000, encoding="utf-8")
+    activity.log_event("context", question="q")
+    assert activity.ACTIVITY_PATH.with_suffix(".log.1").exists()
+    assert len(activity.read_recent(5)) == 1
+
+    # Unwritable path must never break the actual command.
+    monkeypatch.setattr(activity, "ACTIVITY_PATH", activity.ACTIVITY_PATH / "impossible" / "x.log")
+    activity.log_event("context", question="q")  # no exception

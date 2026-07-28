@@ -139,8 +139,19 @@ would call grep — you'll see the command in its activity log.
 
 ## Troubleshooting
 
+**Is the agent actually using Roger? Don't ask it — check the log:**
+
+```bash
+roger log
+```
+
+Every `roger context` and `roger ask` call is recorded locally (what was
+asked, tokens served, and whether the caller was a human or a program), in
+`.roger/activity.log`. If your agent claims it used Roger, the log is the
+truth.
+
 **The agent never runs `roger context`.** Agents follow instructions files
-but aren't forced to. Check the instruction is present (open `AGENTS.md` /
+but aren't forced to — smaller local models especially. Check the instruction is present (open `AGENTS.md` /
 `.github/copilot-instructions.md` — you should see a section marked
 `<!-- roger:start -->`). Restart the agent session — instructions files are
 read at session start. You can also just tell the agent once: *"use roger
