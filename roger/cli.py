@@ -604,11 +604,17 @@ def _install_snippet(path: Path) -> str:
 
 @agent_app.command("install")
 def agent_install() -> None:
-    """Write the Roger instructions into AGENTS.md (and CLAUDE.md if present)."""
+    """Write the Roger instructions into the files coding agents read."""
     if _anchor_repo_root() is None:
         _fail("✗ Roger: run this inside a git repository.")
     outcome = _install_snippet(Path("AGENTS.md"))
-    console.print(f"✓ AGENTS.md {outcome} — OpenCode, Copilot, Codex, and Aider read it.")
+    console.print(f"✓ AGENTS.md {outcome} — OpenCode, Codex, Copilot CLI, and Aider read it.")
+    copilot_path = Path(".github/copilot-instructions.md")
+    copilot_path.parent.mkdir(parents=True, exist_ok=True)
+    outcome = _install_snippet(copilot_path)
+    console.print(
+        f"✓ .github/copilot-instructions.md {outcome} — GitHub Copilot in VS Code reads it."
+    )
     if Path("CLAUDE.md").exists():
         outcome = _install_snippet(Path("CLAUDE.md"))
         console.print(f"✓ CLAUDE.md {outcome} — Claude Code reads it.")
@@ -620,7 +626,7 @@ def agent_uninstall() -> None:
     """Remove the Roger instructions from AGENTS.md and CLAUDE.md."""
     _anchor_repo_root()
     removed = 0
-    for name in ("AGENTS.md", "CLAUDE.md"):
+    for name in ("AGENTS.md", "CLAUDE.md", ".github/copilot-instructions.md"):
         path = Path(name)
         if not path.exists():
             continue

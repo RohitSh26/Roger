@@ -1,3 +1,3 @@
 """Roger — codebase understanding quiz tool for AI-assisted development."""
 
-__version__ = "0.2.2"
+__version__ = "0.2.3"

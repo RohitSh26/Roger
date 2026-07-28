@@ -1498,3 +1498,21 @@ def test_agent_install_snippet_is_marker_managed(tmp_path, monkeypatch) -> None:
 
     assert cli._install_snippet(agents) == "updated"     # idempotent, no duplicates
     assert agents.read_text(encoding="utf-8").count(cli.AGENT_SNIPPET_START) == 1
+
+
+def test_agent_install_covers_copilot_vscode(tmp_path, monkeypatch) -> None:
+    from pathlib import Path
+
+    from roger import cli
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "_anchor_repo_root", lambda: Path(tmp_path))
+    cli.agent_install()
+    copilot = Path(".github/copilot-instructions.md")
+    assert copilot.exists()
+    assert "roger context" in copilot.read_text(encoding="utf-8")
+    assert "roger context" in Path("AGENTS.md").read_text(encoding="utf-8")
+
+    cli.agent_uninstall()
+    assert not copilot.exists()          # fully removed when Roger-only
+    assert not Path("AGENTS.md").exists()

@@ -246,8 +246,12 @@ budget you set (`--budget 2000` ≈ 2,000 tokens). Two things worth knowing:
 - **You can see exactly what your agent saw** by running the same command
   yourself. No black box.
 
-No server to run, nothing to configure in the agent. Undo anytime with
-`roger agent uninstall`.
+This works with **GitHub Copilot in VS Code** (via
+`.github/copilot-instructions.md`, written for you), **OpenCode**, **Claude
+Code**, Codex, and Aider — step-by-step instructions for each tool, including
+what you'll click and see, are in
+[docs/USING-WITH-AGENTS.md](docs/USING-WITH-AGENTS.md). No server to run,
+nothing to configure in the agent. Undo anytime with `roger agent uninstall`.
 
 ---
 
