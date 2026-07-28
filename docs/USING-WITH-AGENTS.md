@@ -135,14 +135,20 @@ in your regular terminal.
 terminal in VS Code and run):
 
 ```bash
+pip install --upgrade pip setuptools wheel
 pip install git+https://github.com/RohitSh26/Roger.git
 ```
+
+The first line matters in containers: Python 3.12 removed a module called
+`distutils` that older package builds still expect — without this line you
+can hit `No module named 'distutils'` mid-install. Modern `setuptools`
+restores it.
 
 **Durable fix** — make it automatic for every rebuild and every teammate. Add
 one line to your `.devcontainer/devcontainer.json`:
 
 ```json
-"postCreateCommand": "pip install git+https://github.com/RohitSh26/Roger.git"
+"postCreateCommand": "pip install --upgrade pip setuptools wheel && pip install git+https://github.com/RohitSh26/Roger.git"
 ```
 
 (`postCreateCommand` is a standard dev-container setting: commands that run
