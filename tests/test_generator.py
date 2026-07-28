@@ -503,10 +503,10 @@ def test_call_local_404_custom_model_suggests_pull(monkeypatch: pytest.MonkeyPat
     with pytest.raises(ModelNotRegisteredError) as excinfo:
         local.call_local("prompt", model="llama3.2:3b")
     assert "ollama pull llama3.2:3b" in str(excinfo.value)
-    # The default model keeps the roger init hint instead.
+    # The default model points at the lazy one-keypress install instead.
     with pytest.raises(ModelNotRegisteredError) as excinfo:
         local.call_local("prompt")
-    assert "roger init" in str(excinfo.value)
+    assert "one keypress" in str(excinfo.value)
 
 
 class FakeProc:
@@ -562,6 +562,107 @@ def test_ensure_model_registers_default_from_modelfile(
 
     assert commands[0][:3] == ["ollama", "create", "roger-local"]
     assert (cli.ROGER_DIR / "Modelfile").exists()
+
+
+# --- lazy model install (the download happens on first use, not init) --------
+
+
+def _lazy_setup(monkeypatch, *, running=True, registered=False, tty=True):
+    from roger import cli
+    import roger.llm.local as local_mod
+
+    monkeypatch.setattr(local_mod, "is_ollama_running", lambda url=None: running)
+    monkeypatch.setattr(cli, "_default_model_registered", lambda: registered)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: tty)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: tty)
+    installed: list[bool] = []
+    monkeypatch.setattr(cli, "_ensure_model", lambda config: installed.append(True))
+    return cli, installed
+
+
+def test_lazy_install_silent_when_model_present(monkeypatch) -> None:
+    from roger.config import Config
+
+    cli, installed = _lazy_setup(monkeypatch, registered=True)
+    monkeypatch.setattr(
+        "typer.confirm", lambda *a, **k: pytest.fail("prompted despite model present")
+    )
+    cli._ensure_model_ready(Config())
+    assert installed == []
+
+
+def test_lazy_install_skips_azure_and_custom(monkeypatch) -> None:
+    from roger.config import Config, ModelConfig
+
+    cli, installed = _lazy_setup(monkeypatch)
+    monkeypatch.setattr(
+        cli, "_default_model_registered",
+        lambda: pytest.fail("probed Ollama for a user-managed model"),
+    )
+    cli._ensure_model_ready(Config(model=ModelConfig(provider="azure-anthropic")))
+    cli._ensure_model_ready(Config(model=ModelConfig(local="qwen2.5:7b")))
+    assert installed == []
+
+
+def test_lazy_install_defers_when_ollama_down(monkeypatch) -> None:
+    # Generation's OllamaNotRunningError already names the remedy — no prompt.
+    from roger.config import Config
+
+    cli, installed = _lazy_setup(monkeypatch, running=False)
+    monkeypatch.setattr(
+        "typer.confirm", lambda *a, **k: pytest.fail("prompted while Ollama was down")
+    )
+    cli._ensure_model_ready(Config())
+    assert installed == []
+
+
+def test_lazy_install_errors_for_non_tty_callers(monkeypatch) -> None:
+    import typer
+
+    from roger.config import Config
+
+    cli, installed = _lazy_setup(monkeypatch, tty=False)
+    with pytest.raises(typer.Exit) as excinfo:
+        cli._ensure_model_ready(Config())
+    assert excinfo.value.exit_code == 1
+    assert installed == []
+
+
+def test_lazy_install_accept_downloads(monkeypatch) -> None:
+    from roger.config import Config
+
+    cli, installed = _lazy_setup(monkeypatch)
+    monkeypatch.setattr("typer.confirm", lambda *a, **k: True)
+    cli._ensure_model_ready(Config())
+    assert installed == [True]
+
+
+def test_lazy_install_decline_exits_cleanly(monkeypatch) -> None:
+    import typer
+
+    from roger.config import Config
+
+    cli, installed = _lazy_setup(monkeypatch)
+    monkeypatch.setattr("typer.confirm", lambda *a, **k: False)
+    with pytest.raises(typer.Exit) as excinfo:
+        cli._ensure_model_ready(Config())
+    assert excinfo.value.exit_code == 0
+    assert installed == []
+
+
+def test_guard_lets_commit_through_when_model_missing(monkeypatch, graph_file) -> None:
+    from roger.exceptions import ModelNotRegisteredError
+    from roger.hooks import pre_commit
+
+    monkeypatch.chdir(graph_file.parent.parent)
+    monkeypatch.setattr(pre_commit, "_get_staged_files", lambda: ["src/payments/charge.py"])
+    monkeypatch.setattr(
+        pre_commit, "run_quiz",
+        lambda *a, **k: (_ for _ in ()).throw(ModelNotRegisteredError("no model")),
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        pre_commit.run_guard()
+    assert excinfo.value.code == 0
 
 
 def test_call_local_sends_num_ctx_option(monkeypatch: pytest.MonkeyPatch) -> None:

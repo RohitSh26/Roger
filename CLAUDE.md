@@ -174,10 +174,13 @@ When graph.json is missing:
   Or update it with: roger update
 ```
 
-When model is not registered:
+When model is not registered (non-interactive callers only; interactive
+quiz/ask offer a one-keypress download instead — the default model installs
+lazily on first LLM use, never during `roger init`; amended 2026-07-28 by
+Rohit to keep first-run setup fast):
 ```
 ✗ Roger: Model 'roger-local' not found in Ollama.
-  Register it with: roger init
+  Install it by running: roger   (one keypress, ~1.15 GB one-time download)
   Or manually: ollama create roger-local -f .roger/Modelfile
 ```
 

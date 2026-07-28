@@ -145,7 +145,16 @@ def run_guard() -> None:
             node_names=node_display_names(graph, changed_nodes),
             total=config.quiz.questions_per_session,
         )
-    except (OllamaNotRunningError, ModelNotRegisteredError, CloudBackendError, ValueError) as exc:
+    except ModelNotRegisteredError:
+        # Lazy model install means "never downloaded" is a normal state.
+        # A missing download is Roger's gap, not the developer's — never
+        # block a commit over it.
+        print(
+            "⚠ Roger: AI model not installed yet — letting this commit through.\n"
+            "  Run 'roger' once to set it up (one keypress)."
+        )
+        sys.exit(0)
+    except (OllamaNotRunningError, CloudBackendError, ValueError) as exc:
         print(exc)
         print("  Skip this quiz once with: ROGER_SKIP=1 git commit ...")
         sys.exit(1)

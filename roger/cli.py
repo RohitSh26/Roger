@@ -175,12 +175,6 @@ def _offer_setup(top: Path, config: Config) -> None:
         notes.append(
             f"large repo (~{source_count:,} source files) — the first index may take several minutes"
         )
-    if config.model.provider != "azure-anthropic" and config.model.local == DEFAULT_MODEL:
-        registered = subprocess.run(
-            ["ollama", "show", DEFAULT_MODEL], capture_output=True, check=False
-        ).returncode == 0
-        if not registered:
-            notes.append("downloads the ~1.15 GB local model if not already cached")
     detail = f" ({'; '.join(notes)})" if notes else ""
     if not typer.confirm(f"First time here — set up Roger for '{top.name}'?{detail}", default=True):
         raise typer.Exit(code=0)
@@ -201,6 +195,47 @@ def _ensure_modelfile() -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(MODELFILE_CONTENT, encoding="utf-8")
     return target
+
+
+def _default_model_registered() -> bool:
+    return (
+        subprocess.run(
+            ["ollama", "show", DEFAULT_MODEL], capture_output=True, check=False
+        ).returncode
+        == 0
+    )
+
+
+def _ensure_model_ready(config: Config) -> None:
+    """Lazy model install: the download happens the first time it's needed.
+
+    Setup no longer pays the ~1.15 GB default-model download — quizzes and
+    questions are the first moment the LLM matters, so the one-keypress
+    offer lives here. Already installed → silent. Azure and custom models
+    are user-managed; their existing error paths already name the remedy.
+    Non-TTY callers get the standard error, never a prompt.
+    """
+    if config.model.provider == "azure-anthropic" or config.model.local != DEFAULT_MODEL:
+        return
+    from roger.llm.local import MODEL_NOT_REGISTERED_MSG, is_ollama_running
+
+    if not is_ollama_running(config.ollama.url):
+        return  # generation raises OllamaNotRunningError with its remedy
+    if _default_model_registered():
+        return
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        _fail(MODEL_NOT_REGISTERED_MSG.format(model=DEFAULT_MODEL))
+        return
+    if not typer.confirm(
+        "Roger's AI model isn't installed yet (~1.15 GB, one time). Download now?",
+        default=True,
+    ):
+        console.print(
+            "[dim]No download — run this again whenever you're ready. "
+            "'roger context' works without it.[/dim]"
+        )
+        raise typer.Exit(code=0)
+    _ensure_model(config)
 
 
 def _ensure_model(config: Config) -> None:
@@ -294,8 +329,13 @@ def _run_init(config: Config) -> None:
                 "  First-time setup: roger init"
             )
 
-    # 5. Register the default model, or verify a user-configured one.
-    _ensure_model(config)
+    # 5. Verify a user-configured model or the Azure backend — both are
+    #    fast checks. The default local model is deliberately NOT
+    #    downloaded here: it installs (one keypress) the first time a quiz
+    #    or question needs it, so setup stays fast and context-only users
+    #    never pay ~1.15 GB for a model they don't use.
+    if config.model.provider == "azure-anthropic" or config.model.local != DEFAULT_MODEL:
+        _ensure_model(config)
 
     # 6-8. .roger/ directory, default config, databases.
     ROGER_DIR.mkdir(parents=True, exist_ok=True)
@@ -311,9 +351,14 @@ def _run_init(config: Config) -> None:
     )
     if config.model.provider == "azure-anthropic":
         console.print(f"✓ Model ready: {config.model.azure_deployment} (Azure Foundry)")
+    elif config.model.local != DEFAULT_MODEL:
+        console.print(f"✓ Model ready: {config.model.local} (custom)")
+    elif _default_model_registered():
+        console.print(f"✓ Model ready: {config.model.local} (already in Ollama)")
     else:
-        model_note = " (MiniCPM5-1B)" if config.model.local == DEFAULT_MODEL else " (custom)"
-        console.print(f"✓ Model ready: {config.model.local}{model_note}")
+        console.print(
+            "• AI model: downloads on your first quiz or question (~1.15 GB, one time)"
+        )
     console.print(f"✓ Config: {CONFIG_PATH}")
     console.print()
     console.print("Next steps:")
@@ -377,6 +422,9 @@ def quiz(
     if failure_note:
         console.print(f"[dim]{failure_note}[/dim]")
     freshness.maybe_refresh_in_background(config.graph.path)
+
+    # The LLM's first actual use — install the model now if it never was.
+    _ensure_model_ready(config)
 
     # Session size: --count flag wins, else the config value — the
     # docs/code/design split below scales automatically from it.
@@ -696,6 +744,15 @@ def doctor() -> None:
                 "'roger ask' need it; 'roger context' works without it",
                 "open the Ollama app (or: ollama serve)",
             )
+            if config.model.local == DEFAULT_MODEL and is_ollama_running(config.ollama.url):
+                if _default_model_registered():
+                    checks.append(("ok", f"AI model installed ({DEFAULT_MODEL})", ""))
+                else:
+                    checks.append(
+                        ("ok",
+                         "AI model not downloaded yet — installs on your first "
+                         "quiz or question (~1.15 GB, one keypress)", "")
+                    )
 
         # Agent integration
         check(
@@ -874,6 +931,7 @@ def ask(
         _fail(str(exc))
         return
 
+    _ensure_model_ready(config)
     started = time.monotonic()
     with console.status("[dim]Reading the codebase…[/dim]"):
         try:

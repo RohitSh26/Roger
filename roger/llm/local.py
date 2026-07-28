@@ -50,7 +50,7 @@ OLLAMA_NOT_RUNNING_MSG = (
 
 MODEL_NOT_REGISTERED_MSG = (
     "✗ Roger: Model '{model}' not found in Ollama.\n"
-    "  Register it with: roger init\n"
+    "  Install it by running: roger   (one keypress, ~1.15 GB one-time download)\n"
     "  Or manually: ollama create roger-local -f .roger/Modelfile"
 )
 

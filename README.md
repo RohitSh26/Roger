@@ -73,10 +73,18 @@ roger
 First time here — set up Roger for 'payments-service'? [Y/n]:
 ```
 
-Press **Return** to accept. Roger then builds its map of your code (usually
-under a minute), downloads its small AI model if needed (~1.2 GB, one time
-per computer), and starts your first quiz. It tells you beforehand if your
-repository is unusually large or a download is coming — no surprises.
+Press **Return** to accept. Roger builds its map of your code (usually under
+a minute) and starts your first quiz. The quiz's AI model is a separate
+one-time download (~1.15 GB per computer) — Roger asks before fetching it,
+right at the moment a quiz or question first needs it:
+
+```
+Roger's AI model isn't installed yet (~1.15 GB, one time). Download now? [Y/n]
+```
+
+Nothing downloads behind your back, and nothing downloads that you don't
+use: if you only ever run `roger context` (the AI-agent briefings), the
+model is never fetched at all.
 
 **Every time after that**, `roger` simply starts a five-question quiz:
 
