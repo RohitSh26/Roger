@@ -198,6 +198,58 @@ def test_offer_respects_prior_refusal(monkeypatch) -> None:
     cli._maybe_offer_semantic(Config())
 
 
+# --- index self-heal (enabled machine, repo without an index yet) -----------------
+
+
+def _heal_setup(monkeypatch, tmp_path, *, model=True, vectors=False):
+    from roger import cli, freshness
+
+    monkeypatch.chdir(tmp_path)
+    if vectors:
+        embeddings.VECTORS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        embeddings.VECTORS_PATH.touch()
+    monkeypatch.setattr(
+        embeddings, "model_digest", lambda config: "digest-a" if model else None
+    )
+    spawned: list[dict] = []
+    monkeypatch.setattr(
+        freshness, "maybe_refresh_in_background",
+        lambda path, force=False: spawned.append({"force": force}) or True,
+    )
+    return cli, spawned
+
+
+def test_self_heal_builds_missing_index(monkeypatch, tmp_path) -> None:
+    cli, spawned = _heal_setup(monkeypatch, tmp_path)
+    assert cli._ensure_semantic_index(Config()) is True
+    assert spawned == [{"force": True}]
+
+
+def test_self_heal_noop_when_index_exists(monkeypatch, tmp_path) -> None:
+    cli, spawned = _heal_setup(monkeypatch, tmp_path, vectors=True)
+    assert cli._ensure_semantic_index(Config()) is False
+    assert spawned == []
+
+
+def test_self_heal_noop_without_model(monkeypatch, tmp_path) -> None:
+    cli, spawned = _heal_setup(monkeypatch, tmp_path, model=False)
+    assert cli._ensure_semantic_index(Config()) is False
+    assert spawned == []
+
+
+def test_offer_self_heals_on_enabled_machine(monkeypatch, tmp_path) -> None:
+    # Model present + no index: the consent flow must not prompt (presence
+    # IS consent) but must quietly start the repo's first index build.
+    cli, spawned = _heal_setup(monkeypatch, tmp_path)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    monkeypatch.setattr(
+        "typer.confirm", lambda *a, **k: pytest.fail("prompted an enabled machine")
+    )
+    cli._maybe_offer_semantic(Config())
+    assert spawned == [{"force": True}]
+
+
 # --- the never-commit guarantee ---------------------------------------------------
 
 

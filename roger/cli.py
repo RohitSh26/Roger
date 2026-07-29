@@ -138,7 +138,10 @@ def _maybe_offer_semantic(config: Config, reoffer: bool = False) -> None:
     if embeddings.embed_prompt_declined() and not reoffer:
         return
     if embeddings.model_digest(config) is not None:
-        return  # already enabled by presence
+        # Already enabled by presence — but a fresh repo on an enabled
+        # machine still needs its index built once.
+        _ensure_semantic_index(config)
+        return
     from roger.llm.local import is_ollama_running
 
     if not is_ollama_running(config.ollama.url):
@@ -162,6 +165,42 @@ def _maybe_offer_semantic(config: Config, reoffer: bool = False) -> None:
         console.print("[dim]Smarter search enabled — the index builds in the background.[/dim]")
     else:
         embeddings.record_declined()
+
+
+def _ensure_semantic_index(config: Config) -> bool:
+    """Self-heal a missing vector index: embed model present on this
+    machine (presence is consent) but this repo has no vectors.db yet —
+    happens on fresh clones and repos first touched by an agent. Builds in
+    the background; returns True if a build was started."""
+    if embeddings.VECTORS_PATH.exists():
+        return False
+    if embeddings.model_digest(config) is None:
+        return False
+    return freshness.maybe_refresh_in_background(config.graph.path, force=True)
+
+
+def _refresh_semantic(config: Config) -> Optional[dict]:
+    """Run the index refresh after a graph update; never fails the update."""
+    try:
+        return embeddings.refresh_index(load_graph(config.graph.path), config)
+    except Exception:  # noqa: BLE001 - semantic layer must never block updates
+        return None
+
+
+def _print_semantic_result(stats: Optional[dict]) -> None:
+    """One honest line about what the update did to the smarter-search
+    index — it always ran; it should never run invisibly."""
+    if stats is None:
+        console.print("[dim]• Smarter search: off (keyword-only) — 'roger doctor' to enable.[/dim]")
+    elif stats["embedded"]:
+        console.print(
+            f"✓ Smarter search: re-indexed {stats['embedded']} changed function(s) "
+            f"({stats['with_vec']:,} of {stats['cards']:,} indexed)."
+        )
+    else:
+        console.print(
+            f"✓ Smarter search: index already current ({stats['cards']:,} functions)."
+        )
 
 
 def _offer_setup(top: Path, config: Config) -> None:
@@ -342,6 +381,11 @@ def _run_init(config: Config) -> None:
     write_default_config(CONFIG_PATH)
     init_dbs()
 
+    # Machine already has the embed model (smarter search enabled) → this
+    # new repo's index builds now, in the background, so the first
+    # question — human's or agent's — can already match by meaning.
+    semantic_started = _ensure_semantic_index(config)
+
     # 9. Success summary.
     graph = load_graph(config.graph.path)
     console.print()
@@ -359,6 +403,8 @@ def _run_init(config: Config) -> None:
         console.print(
             "• AI model: downloads on your first quiz or question (~1.15 GB, one time)"
         )
+    if semantic_started:
+        console.print("✓ Smarter search: index building in the background")
     console.print(f"✓ Config: {CONFIG_PATH}")
     console.print()
     console.print("Next steps:")
@@ -555,11 +601,7 @@ def update(
     try:
         result = freshness.run_update(config.graph.path)
         # Embed step rides the same flow; never fails the graph update.
-        if result.outcome == "ok":
-            try:
-                embeddings.refresh_index(load_graph(config.graph.path), config)
-            except Exception:  # noqa: BLE001 - semantic layer must never block updates
-                pass
+        stats = _refresh_semantic(config) if result.outcome == "ok" else None
         if background:
             return
         if result.outcome == "ok":
@@ -568,6 +610,7 @@ def update(
                 f"✓ Graph updated in {result.duration_secs:.0f}s — "
                 f"{result.nodes_after:,} nodes ({'+' if delta >= 0 else ''}{delta:,})."
             )
+            _print_semantic_result(stats)
         elif result.outcome == "shrink_refused":
             # The ONE verb finishes its own job: explain, confirm, rebuild —
             # never send the user to another tool's --force flag.
@@ -582,6 +625,7 @@ def update(
                         f"✓ Graph rebuilt in {result.duration_secs:.0f}s — "
                         f"{result.nodes_after:,} nodes."
                     )
+                    _print_semantic_result(_refresh_semantic(config))
                 else:
                     _fail(f"✗ Roger: rebuild failed:\n{result.detail}")
         else:
@@ -842,7 +886,12 @@ def context(
     except GraphNotFoundError as exc:
         _fail(str(exc))
         return
-    freshness.maybe_refresh_in_background(config.graph.path)
+    # Freshness first; if nothing needed refreshing, self-heal a missing
+    # vector index so the NEXT agent call gets semantic matching. This
+    # call still answers immediately (keyword-only if the index isn't
+    # ready) — agents are never made to wait on an index build.
+    if not freshness.maybe_refresh_in_background(config.graph.path):
+        _ensure_semantic_index(config)
     # Plain stdout — agents consume this; no panels, no colors.
     started = time.monotonic()
     pack = context_pack(question, graph, config, budget_tokens=budget)
@@ -888,6 +937,20 @@ def agent_install() -> None:
         outcome = _install_snippet(Path("CLAUDE.md"))
         console.print(f"✓ CLAUDE.md {outcome} — Claude Code reads it.")
     console.print("  Agents will now run 'roger context' before grepping and reading files.")
+
+    # The human is setting up agents right now — the one moment to make
+    # sure their context packs get semantic matching from the first call.
+    config = _load_config()
+    status = embeddings.index_status(config)
+    if status["mode"] == "semantic+keyword":
+        console.print("✓ Smarter search is on — packs match by meaning as well as keywords.")
+    elif _ensure_semantic_index(config):
+        console.print(
+            "✓ Smarter search index building in the background — "
+            "packs match by meaning once it finishes (a minute or two)."
+        )
+    else:
+        _maybe_offer_semantic(config)
 
 
 @agent_app.command("uninstall")
