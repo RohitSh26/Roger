@@ -21,7 +21,7 @@ import sys
 import time
 from contextlib import closing
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import requests
 
@@ -184,46 +184,41 @@ def _candidate_nodes(graph) -> list[str]:
     return picked
 
 
-def refresh_index(graph, config: Config, batch_size: int = 64) -> Optional[dict]:
+def refresh_index(
+    graph,
+    config: Config,
+    batch_size: int = 64,
+    progress: Optional[Callable[[int, int], None]] = None,
+) -> Optional[dict]:
     """(Re)embed changed cards. Runs inside the freshness flow; never raises.
 
     Returns coverage stats or None when the model isn't available. A digest
-    change invalidates every card (embedding spaces don't mix).
+    change invalidates every card (embedding spaces don't mix). progress,
+    when given, is called with (embedded, pending total) after each batch.
     """
     digest = model_digest(config)
     if digest is None:
         return None
     try:
         with closing(_connect()) as conn:
-            stored = dict(conn.execute("SELECT node_id, content_hash FROM cards"))
+            stored = {
+                row[0]: (row[1], bool(row[2]))
+                for row in conn.execute(
+                    "SELECT node_id, content_hash, vec IS NOT NULL FROM cards"
+                )
+            }
             candidates = _candidate_nodes(graph)
             pending: list[tuple[str, str, str]] = []
             for node_id in candidates:
                 node = g.get_node(graph, node_id)
                 text = card_text(node)
                 content = card_hash(text, digest)
-                if stored.get(node_id) != content:
+                prev = stored.get(node_id)
+                # Re-embed on content change AND on a missing vector — a row
+                # written upfront by an interrupted build must not look
+                # "done" just because its hash matches.
+                if prev is None or prev[0] != content or not prev[1]:
                     pending.append((node_id, text, content))
-
-            embedded = 0
-            for start in range(0, len(pending), batch_size):
-                batch = pending[start : start + batch_size]
-                vectors = _embed(
-                    [_DOC_PREFIX + text for _, text, _ in batch], config, timeout=120
-                )
-                if vectors is None or len(vectors) != len(batch):
-                    break  # partial coverage is fine; next refresh resumes
-                rows = [
-                    (node_id, content, text, _pack(vector))
-                    for (node_id, text, content), vector in zip(batch, vectors)
-                ]
-                conn.executemany(
-                    "INSERT OR REPLACE INTO cards (node_id, content_hash, card_text, vec) "
-                    "VALUES (?, ?, ?, ?)",
-                    rows,
-                )
-                conn.commit()
-                embedded += len(rows)
 
             # Deleted code loses its card; chunked to stay under SQLite's
             # bound-parameter limit on large repos.
@@ -234,6 +229,36 @@ def refresh_index(graph, config: Config, batch_size: int = 64) -> Optional[dict]
                     "DELETE FROM cards WHERE node_id IN (%s)" % ",".join("?" * len(chunk)),
                     chunk,
                 )
+            # Every pending card is written up front with an empty vector:
+            # done/total progress is real from the first second, and the
+            # keyword channel gets fresh card texts immediately — even if
+            # embedding is interrupted before it finishes.
+            conn.executemany(
+                "INSERT OR REPLACE INTO cards (node_id, content_hash, card_text, vec) "
+                "VALUES (?, ?, ?, NULL)",
+                [(node_id, content, text) for node_id, text, content in pending],
+            )
+            conn.commit()
+
+            embedded = 0
+            for start in range(0, len(pending), batch_size):
+                batch = pending[start : start + batch_size]
+                vectors = _embed(
+                    [_DOC_PREFIX + text for _, text, _ in batch], config, timeout=120
+                )
+                if vectors is None or len(vectors) != len(batch):
+                    break  # partial coverage is fine; next refresh resumes
+                conn.executemany(
+                    "UPDATE cards SET vec = ? WHERE node_id = ?",
+                    [
+                        (_pack(vector), node_id)
+                        for (node_id, _, _), vector in zip(batch, vectors)
+                    ],
+                )
+                conn.commit()
+                embedded += len(batch)
+                if progress is not None:
+                    progress(embedded, len(pending))
             for key, value in (
                 ("embed_version", str(EMBED_VERSION)),
                 ("model", EMBED_MODEL),
@@ -278,6 +303,17 @@ def _read_index_state() -> Optional[tuple[dict, int, int]]:
         return meta, total or 0, with_vec or 0
     except sqlite3.Error:
         return None
+
+
+def index_progress() -> Optional[tuple[int, int]]:
+    """(embedded, total) card counts — no network calls. None if no index."""
+    if not VECTORS_PATH.exists():
+        return None
+    state = _read_index_state()
+    if state is None:
+        return None
+    _, total, with_vec = state
+    return with_vec, total
 
 
 def needs_refresh(config: Config) -> bool:

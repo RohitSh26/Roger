@@ -88,6 +88,40 @@ def test_refresh_index_without_model_is_none(graph, in_tmp_repo, monkeypatch) ->
     assert not embeddings.VECTORS_PATH.exists()
 
 
+def test_refresh_writes_cards_upfront_for_real_progress(graph, in_tmp_repo, monkeypatch) -> None:
+    # Embedding fails entirely → zero vectors, but every card row (and its
+    # text) exists, so done/total progress and keyword enrichment are real.
+    monkeypatch.setattr(embeddings, "model_digest", lambda config: "digest-a")
+    monkeypatch.setattr(embeddings, "_embed", lambda texts, config, timeout: None)
+    stats = embeddings.refresh_index(graph, Config())
+    assert stats is not None
+    assert (stats["cards"], stats["with_vec"], stats["embedded"]) == (11, 0, 0)
+    assert len(embeddings.load_card_texts()) == 11
+    assert embeddings.index_progress() == (0, 11)
+
+
+def test_refresh_resumes_vectorless_rows(graph, in_tmp_repo, monkeypatch) -> None:
+    # Rows written upfront by an interrupted build must be re-embedded even
+    # though their content hash already matches.
+    monkeypatch.setattr(embeddings, "model_digest", lambda config: "digest-a")
+    monkeypatch.setattr(embeddings, "_embed", lambda texts, config, timeout: None)
+    embeddings.refresh_index(graph, Config())
+    monkeypatch.setattr(embeddings, "_embed", fake_embed_factory())
+    stats = embeddings.refresh_index(graph, Config())
+    assert stats is not None and stats["embedded"] == 11
+    assert embeddings.index_progress() == (11, 11)
+
+
+def test_progress_callback_reports_done_of_total(graph, in_tmp_repo, monkeypatch) -> None:
+    monkeypatch.setattr(embeddings, "model_digest", lambda config: "digest-a")
+    monkeypatch.setattr(embeddings, "_embed", fake_embed_factory())
+    ticks: list[tuple[int, int]] = []
+    embeddings.refresh_index(
+        graph, Config(), batch_size=4, progress=lambda d, t: ticks.append((d, t))
+    )
+    assert ticks == [(4, 11), (8, 11), (11, 11)]
+
+
 # --- query-time ranking and fallbacks --------------------------------------------
 
 

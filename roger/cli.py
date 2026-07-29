@@ -178,12 +178,70 @@ def _ensure_semantic_index(config: Config) -> bool:
     return freshness.maybe_refresh_in_background(config.graph.path, force=True)
 
 
-def _refresh_semantic(config: Config) -> Optional[dict]:
-    """Run the index refresh after a graph update; never fails the update."""
+def _refresh_semantic(config: Config, live: bool = True) -> Optional[dict]:
+    """Run the index refresh after a graph update; never fails the update.
+
+    live=True shows a moving count in the terminal; live=False prints
+    plain lines instead, which the background updater's stdout redirect
+    lands in .roger/update.log — the build is observable either way.
+    """
     try:
-        return embeddings.refresh_index(load_graph(config.graph.path), config)
+        graph = load_graph(config.graph.path)
+        if not live:
+            return embeddings.refresh_index(
+                graph, config,
+                progress=lambda done, total: print(
+                    f"smarter search: embedded {done}/{total}", flush=True
+                ),
+            )
+        with console.status("[dim]Smarter search: checking the index…[/dim]") as spinner:
+            return embeddings.refresh_index(
+                graph, config,
+                progress=lambda done, total: spinner.update(
+                    f"[dim]Smarter search: embedding {done:,} of {total:,} "
+                    "changed functions…[/dim]"
+                ),
+            )
     except Exception:  # noqa: BLE001 - semantic layer must never block updates
         return None
+
+
+def _watch_background_update(config: Config) -> None:
+    """Attach to a running background update and show it move — the honest
+    answer to 'is the index actually building?'."""
+    with console.status("[dim]working…[/dim]") as spinner:
+        while freshness.lock_held():
+            progress = embeddings.index_progress()
+            if progress and progress[1]:
+                spinner.update(
+                    f"[dim]smarter search: {progress[0]:,} of {progress[1]:,} "
+                    "functions embedded…[/dim]"
+                )
+            time.sleep(1)
+    final = embeddings.index_status(config)
+    if final["mode"] == "semantic+keyword":
+        console.print(
+            f"✓ Background update finished — smarter search index current "
+            f"({final['cards']:,} functions)."
+        )
+    else:
+        console.print(
+            f"• Background update finished — smarter search: {final.get('reason', 'off')}."
+        )
+
+
+def _note_index_build() -> None:
+    """One dim line when an index build is running during a quiz — the quiz
+    works fine meanwhile, but invisible background work is banned."""
+    if not freshness.lock_held():
+        return
+    progress = embeddings.index_progress()
+    if progress and progress[1] and progress[0] < progress[1]:
+        console.print(
+            f"[dim]Smarter search index building in the background "
+            f"({progress[0]:,} of {progress[1]:,} functions) — "
+            "the quiz works fine meanwhile.[/dim]"
+        )
 
 
 def _print_semantic_result(stats: Optional[dict]) -> None:
@@ -467,6 +525,7 @@ def quiz(
     if failure_note:
         console.print(f"[dim]{failure_note}[/dim]")
     freshness.maybe_refresh_in_background(config.graph.path)
+    _note_index_build()
 
     # The LLM's first actual use — install the model now if it never was.
     _ensure_model_ready(config)
@@ -596,11 +655,13 @@ def update(
     if not freshness.acquire_lock():
         if background:
             raise typer.Exit(code=0)
-        _fail("✗ Roger: a graph update is already running — try again in a moment.")
+        console.print("An update is already running in the background — watching it:")
+        _watch_background_update(config)
+        return
     try:
         result = freshness.run_update(config.graph.path)
         # Embed step rides the same flow; never fails the graph update.
-        stats = _refresh_semantic(config) if result.outcome == "ok" else None
+        stats = _refresh_semantic(config, live=not background) if result.outcome == "ok" else None
         if background:
             return
         if result.outcome == "ok":

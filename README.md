@@ -177,6 +177,14 @@ Things worth knowing, in plain terms:
   There is no error to handle and no waiting.
 - **It stays current by itself.** The index refreshes in the same
   background pass that keeps the code map fresh.
+- **You can always see it working.** Background work is never invisible:
+  `roger update` shows the index being built with a live count (and if a
+  build is already running in the background, it attaches and watches it
+  finish); `roger doctor` shows a snapshot like *"index building now
+  (N of M functions done)"*; and a quiz that starts during a
+  build says so in one quiet line. If a build is ever interrupted — a
+  closed laptop, a stopped container — Roger notices and resumes it on
+  its own the next time you (or your agents) touch it.
 
 ---
 
