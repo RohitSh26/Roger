@@ -267,27 +267,98 @@ def _unpack(blob: bytes) -> list[float]:
 # --- query time --------------------------------------------------------------------------
 
 
-def index_status(config: Config) -> dict:
-    """For roger doctor: mode, coverage, digest agreement."""
-    digest = model_digest(config)
-    if not VECTORS_PATH.exists():
-        return {"mode": "keyword-only", "reason": "no index", "model_present": digest is not None}
+def _read_index_state() -> Optional[tuple[dict, int, int]]:
+    """(meta, total cards, cards with vectors) or None if unreadable."""
     try:
         with closing(_connect()) as conn:
             meta = dict(conn.execute("SELECT key, value FROM meta"))
             total, with_vec = conn.execute(
                 "SELECT COUNT(*), SUM(vec IS NOT NULL) FROM cards"
             ).fetchone()
+        return meta, total or 0, with_vec or 0
     except sqlite3.Error:
-        return {"mode": "keyword-only", "reason": "index unreadable", "model_present": digest is not None}
+        return None
+
+
+def needs_refresh(config: Config) -> bool:
+    """Should a background refresh (re)build this repo's index?
+
+    True for: no index yet, an interrupted build (meta is only written when
+    a build finishes, so a killed build leaves cards without meta), a model
+    change, or partial coverage. A 10-minute cool-down since the last
+    completed attempt stops a persistently failing embed endpoint from
+    turning every context call into a rebuild.
+    """
+    digest = model_digest(config)
     if digest is None:
-        return {"mode": "keyword-only", "reason": "embed model not available", "model_present": False}
+        return False
+    if not VECTORS_PATH.exists():
+        return True
+    state = _read_index_state()
+    if state is None:
+        return False
+    meta, total, with_vec = state
+    if (
+        meta.get("digest") == digest
+        and meta.get("embed_version") == str(EMBED_VERSION)
+        and with_vec >= total
+    ):
+        return False
+    last = meta.get("updated_at")
+    if last:
+        try:
+            done = time.mktime(time.strptime(last, "%Y-%m-%dT%H:%M:%S"))
+            if time.time() - done < 600:
+                return False
+        except ValueError:
+            pass
+    return True
+
+
+def index_status(config: Config) -> dict:
+    """For roger doctor: mode, coverage, and a reason a human can act on."""
+    from roger import freshness
+
+    digest = model_digest(config)
+    if not VECTORS_PATH.exists():
+        return {
+            "mode": "keyword-only", "reason": "index not built yet",
+            "model_present": digest is not None,
+        }
+    state = _read_index_state()
+    if state is None:
+        return {
+            "mode": "keyword-only", "reason": "index unreadable",
+            "model_present": digest is not None,
+        }
+    meta, total, with_vec = state
+    if digest is None:
+        return {
+            "mode": "keyword-only",
+            "reason": "embedding model not available (is Ollama running?)",
+            "model_present": False,
+        }
+    if not meta.get("digest"):
+        # A finished build always has meta — its absence means the first
+        # build is mid-flight (lock held) or died partway.
+        reason = (
+            f"index building now ({with_vec:,} of {total:,} functions done)"
+            if freshness.lock_held()
+            else "an index build was interrupted"
+        )
+        return {"mode": "keyword-only", "reason": reason, "model_present": True,
+                "cards": total, "with_vec": with_vec}
     if meta.get("digest") != digest or meta.get("embed_version") != str(EMBED_VERSION):
-        return {"mode": "keyword-only", "reason": "index rebuilding (model changed)", "model_present": True}
+        return {"mode": "keyword-only", "reason": "the embedding model changed",
+                "model_present": True, "cards": total, "with_vec": with_vec}
+    if with_vec < total:
+        return {"mode": "keyword-only",
+                "reason": f"index {with_vec:,}/{total:,} complete",
+                "model_present": True, "cards": total, "with_vec": with_vec}
     return {
         "mode": "semantic+keyword",
-        "cards": total or 0,
-        "with_vec": with_vec or 0,
+        "cards": total,
+        "with_vec": with_vec,
         "model_present": True,
     }
 

@@ -168,13 +168,12 @@ def _maybe_offer_semantic(config: Config, reoffer: bool = False) -> None:
 
 
 def _ensure_semantic_index(config: Config) -> bool:
-    """Self-heal a missing vector index: embed model present on this
-    machine (presence is consent) but this repo has no vectors.db yet —
-    happens on fresh clones and repos first touched by an agent. Builds in
-    the background; returns True if a build was started."""
-    if embeddings.VECTORS_PATH.exists():
-        return False
-    if embeddings.model_digest(config) is None:
+    """Self-heal an unhealthy vector index: missing (fresh clone, repo
+    first touched by an agent), interrupted mid-build (closed laptop,
+    stopped container), stale after a model change, or partially covered.
+    Presence of the embed model is the consent; the build runs in the
+    background. Returns True if a build was started."""
+    if not embeddings.needs_refresh(config):
         return False
     return freshness.maybe_refresh_in_background(config.graph.path, force=True)
 
@@ -806,16 +805,21 @@ def doctor() -> None:
             "roger agent install",
         )
 
-        # Retrieval mode (semantic is optional; keyword-only is never wrong)
+        # Retrieval mode (semantic is optional; keyword-only is never wrong).
+        # Doctor is the remedy surface: an unhealthy index isn't just
+        # reported — the rebuild starts right here.
         status = embeddings.index_status(config)
         if status["mode"] == "semantic+keyword":
             checks.append(
                 ("ok", f"smarter search active ({status['with_vec']}/{status['cards']} indexed)", "")
             )
         else:
-            checks.append(
-                ("ok", f"search: keyword-only ({status.get('reason', '')})", "")
-            )
+            line = f"smarter search: {status.get('reason', 'off')}"
+            if _ensure_semantic_index(config):
+                line += " — rebuilding in the background now"
+            elif not status.get("model_present"):
+                line = f"search: keyword-only ({status.get('reason', '')})"
+            checks.append(("ok", line, ""))
 
     icons = {"ok": "[green]✓[/green]", "warn": "[yellow]⚠[/yellow]", "fail": "[red]✗[/red]"}
     failed = False

@@ -201,13 +201,10 @@ def test_offer_respects_prior_refusal(monkeypatch) -> None:
 # --- index self-heal (enabled machine, repo without an index yet) -----------------
 
 
-def _heal_setup(monkeypatch, tmp_path, *, model=True, vectors=False):
+def _heal_setup(monkeypatch, tmp_path, *, model=True):
     from roger import cli, freshness
 
     monkeypatch.chdir(tmp_path)
-    if vectors:
-        embeddings.VECTORS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        embeddings.VECTORS_PATH.touch()
     monkeypatch.setattr(
         embeddings, "model_digest", lambda config: "digest-a" if model else None
     )
@@ -219,14 +216,60 @@ def _heal_setup(monkeypatch, tmp_path, *, model=True, vectors=False):
     return cli, spawned
 
 
+def _write_index(meta: dict, cards: list[tuple[str, bool]]) -> None:
+    import time
+    from contextlib import closing
+
+    with closing(embeddings._connect()) as conn:
+        defaults = {"embed_version": "1", "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        for key, value in {**defaults, **meta}.items():
+            conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value))
+        for node_id, has_vec in cards:
+            conn.execute(
+                "INSERT OR REPLACE INTO cards (node_id, content_hash, card_text, vec) "
+                "VALUES (?, ?, ?, ?)",
+                (node_id, "h", "text", b"\x00\x00\x80?" if has_vec else None),
+            )
+        conn.commit()
+
+
 def test_self_heal_builds_missing_index(monkeypatch, tmp_path) -> None:
     cli, spawned = _heal_setup(monkeypatch, tmp_path)
     assert cli._ensure_semantic_index(Config()) is True
     assert spawned == [{"force": True}]
 
 
-def test_self_heal_noop_when_index_exists(monkeypatch, tmp_path) -> None:
-    cli, spawned = _heal_setup(monkeypatch, tmp_path, vectors=True)
+def test_self_heal_noop_when_index_healthy(monkeypatch, tmp_path) -> None:
+    cli, spawned = _heal_setup(monkeypatch, tmp_path)
+    _write_index({"digest": "digest-a"}, [("a", True), ("b", True)])
+    assert cli._ensure_semantic_index(Config()) is False
+    assert spawned == []
+
+
+def test_self_heal_resumes_interrupted_build(monkeypatch, tmp_path) -> None:
+    # A killed build leaves cards but no meta (meta is written on finish) —
+    # this was the stuck "index rebuilding (model changed)" state.
+    cli, spawned = _heal_setup(monkeypatch, tmp_path)
+    _write_index({}, [("a", True), ("b", False)])
+    with __import__("contextlib").closing(embeddings._connect()) as conn:
+        conn.execute("DELETE FROM meta")
+        conn.commit()
+    assert cli._ensure_semantic_index(Config()) is True
+    assert spawned == [{"force": True}]
+
+
+def test_self_heal_rebuilds_on_model_change_after_cooldown(monkeypatch, tmp_path) -> None:
+    cli, spawned = _heal_setup(monkeypatch, tmp_path)
+    _write_index(
+        {"digest": "digest-OLD", "updated_at": "2000-01-01T00:00:00"}, [("a", True)]
+    )
+    assert cli._ensure_semantic_index(Config()) is True
+
+
+def test_self_heal_honors_cooldown_after_recent_attempt(monkeypatch, tmp_path) -> None:
+    # Persistently failing embeds must not turn every call into a rebuild.
+    cli, spawned = _heal_setup(monkeypatch, tmp_path)
+    _write_index({"digest": "digest-a"}, [("a", True), ("b", False)])  # partial, fresh
     assert cli._ensure_semantic_index(Config()) is False
     assert spawned == []
 
@@ -235,6 +278,22 @@ def test_self_heal_noop_without_model(monkeypatch, tmp_path) -> None:
     cli, spawned = _heal_setup(monkeypatch, tmp_path, model=False)
     assert cli._ensure_semantic_index(Config()) is False
     assert spawned == []
+
+
+def test_status_names_interrupted_build_honestly(monkeypatch, tmp_path) -> None:
+    from roger import freshness
+
+    _heal_setup(monkeypatch, tmp_path)
+    _write_index({}, [("a", True), ("b", False)])
+    with __import__("contextlib").closing(embeddings._connect()) as conn:
+        conn.execute("DELETE FROM meta")
+        conn.commit()
+    monkeypatch.setattr(freshness, "lock_held", lambda: False)
+    status = embeddings.index_status(Config())
+    assert status["reason"] == "an index build was interrupted"
+    monkeypatch.setattr(freshness, "lock_held", lambda: True)
+    status = embeddings.index_status(Config())
+    assert "index building now" in status["reason"]
 
 
 def test_offer_self_heals_on_enabled_machine(monkeypatch, tmp_path) -> None:
