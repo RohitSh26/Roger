@@ -15,13 +15,24 @@ STYLE = """
 <style>
 /* ---------- shell ---------- */
 .stApp { background:#FFFFFF; }
-.block-container { max-width:760px; padding-top:2.2rem; padding-bottom:6rem; }
+.block-container,
+[data-testid="stMainBlockContainer"],
+[data-testid="stAppViewBlockContainer"],
+section.main > div.block-container {
+  max-width:760px !important; margin:0 auto !important;
+  padding-top:2.2rem; padding-bottom:6rem;
+}
 html, body, [class*="css"] { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",
   Roboto,sans-serif; -webkit-font-smoothing:antialiased; color:#1D1D1F; }
 #MainMenu, footer, header[data-testid="stHeader"] { visibility:hidden; height:0; }
 
-.roger-brand { font-size:13px; color:#6E6E73; letter-spacing:-.005em; margin-bottom:4px; }
+.roger-brand { font-size:13px; color:#6E6E73; letter-spacing:-.005em; margin-bottom:4px;
+  display:flex; justify-content:space-between; align-items:baseline; }
 .roger-brand b { color:#1D1D1F; font-weight:600; }
+.roger-brand .backend { font-size:11.5px; color:#A1A1A6;
+  font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; }
+.roger-sub code { font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  font-size:.9em; background:#F2F2EF; border-radius:4px; padding:0 4px; }
 .roger-title { font-size:26px; font-weight:600; letter-spacing:-.02em; margin:6px 0 2px; }
 .roger-sub { font-size:14.5px; line-height:1.6; color:#6E6E73; letter-spacing:-.005em; }
 .roger-qcaption { font-size:12px; font-weight:600; letter-spacing:.07em;
@@ -100,7 +111,7 @@ div.stButton > button p { margin:0; font-size:inherit; }
 .roger-why b { font-style:normal; }
 
 /* ---------- code block (st.code) ---------- */
-[data-testid="stCode"] pre, .stCodeBlock pre {
+[data-testid="stCode"] pre, [data-testid="stCodeBlock"] pre, .stCodeBlock pre {
   background:#FBFBF9; border:1px solid #E8E8E4; border-radius:10px;
   padding:14px 18px 14px 0;
 }
@@ -163,6 +174,10 @@ div.stButton > button p { margin:0; font-size:inherit; }
   font-size:12.5px; line-height:1.9; color:#48484D; margin:0; }
 
 /* ---------- progress ---------- */
+[data-testid="stProgress"] [data-testid="stMarkdownContainer"] p {
+  font-size:13px; color:#6E6E73; letter-spacing:-.004em; margin-bottom:4px; }
+.roger-reading { font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  font-size:12px; color:#A1A1A6; margin-top:6px; }
 [data-testid="stProgress"] > div > div { height:4px; background:#EAEAE7;
   border-radius:2px; }
 [data-testid="stProgress"] > div > div > div { background:#0071E3;

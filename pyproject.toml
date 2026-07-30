@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "roger-cli"
-version = "0.5.3"
+version = "0.5.4"
 description = "Codebase understanding quiz tool for AI-assisted development"
 readme = "README.md"
 license = {text = "MIT"}
@@ -25,7 +25,7 @@ roger = "roger.cli:app"
 
 [project.optional-dependencies]
 app = ["streamlit>=1.36"]
-dev = ["pytest", "pytest-cov", "ruff", "mypy"]
+dev = ["pytest", "pytest-cov", "ruff", "mypy", "playwright"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["roger"]

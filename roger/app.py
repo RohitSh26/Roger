@@ -62,19 +62,32 @@ def _generate_session(count: int) -> None:
     stream, names, total = quiz_blueprint(graph, config, count, _node_picker)
     questions: list[Question] = []
     bar = st.progress(0.0, text="Preparing your quiz…")
+    reading = st.empty()
     for question in stream:
         questions.append(question)
         done = min(len(questions), total)
+        bar.progress(done / total, text=f"Question {done} of {total} ready…")
         where = names.get(question.node_id, "")
-        note = f" · reading {where}" if where else ""
-        bar.progress(done / total, text=f"Question {done} of {total} ready…{note}")
-    bar.empty()
+        path = where.split(" (")[-1].rstrip(")") if " (" in where else where
+        if path:
+            reading.markdown(
+                f'<div class="roger-reading">reading {path}</div>',
+                unsafe_allow_html=True,
+            )
     st.session_state.quiz = {
         "questions": questions,
         "names": names,
         "index": 0,
         "picks": {},  # index -> chosen key
     }
+
+
+def _backend_label() -> str:
+    config, _, _, _ = _load_world()
+    if config.model.provider == "azure-anthropic":
+        return f"Azure Foundry · {config.model.azure_deployment}"
+    name = config.model.local.rsplit("/", 1)[-1]
+    return f"Ollama · {name}"
 
 
 def _indexed_note() -> str:
@@ -84,13 +97,17 @@ def _indexed_note() -> str:
         age_secs = time.time() - Path(config.graph.path).stat().st_mtime
     except OSError:
         return f"at `{commit}`" if commit else ""
+    def plural(n: int, unit: str) -> str:
+        n = max(1, int(n))
+        return f"{n} {unit}{'s' if n != 1 else ''} ago"
+
     if age_secs < 3600:
-        age = f"{max(1, int(age_secs // 60))} minutes ago"
+        age = plural(age_secs // 60, "minute")
     elif age_secs < 86400:
-        age = f"{int(age_secs // 3600)} hours ago"
+        age = plural(age_secs // 3600, "hour")
     else:
-        age = f"{int(age_secs // 86400)} days ago"
-    return f"Indexed {age}" + (f" at `{commit}`" if commit else "")
+        age = plural(age_secs // 86400, "day")
+    return f"Indexed {age}" + (f" at <code>{commit}</code>" if commit else "")
 
 
 # --------------------------------------------------------------------------- quiz
@@ -113,11 +130,7 @@ def _quiz_start() -> None:
     st.write("")
     with st.container(key="primary"):
         if st.button("Start quiz"):
-            try:
-                _generate_session(int(count or 5))
-            except Exception as exc:  # backend down/model missing → say it plainly
-                st.error(str(exc))
-                return
+            st.session_state.generating = int(count or 5)
             st.rerun()
 
 
@@ -236,9 +249,23 @@ def _quiz_end(quiz: dict) -> None:
                 )
 
 
+def _quiz_generating() -> None:
+    count = st.session_state.pop("generating")
+    st.markdown('<div class="roger-title">Preparing your quiz</div>',
+                unsafe_allow_html=True)
+    try:
+        _generate_session(count)
+    except Exception as exc:  # backend down/model missing → say it plainly
+        st.error(str(exc))
+        return
+    st.rerun()
+
+
 def _quiz_tab() -> None:
     quiz = st.session_state.get("quiz")
-    if quiz is None:
+    if st.session_state.get("generating"):
+        _quiz_generating()
+    elif quiz is None:
         _quiz_start()
     elif quiz["index"] >= len(quiz["questions"]):
         _quiz_end(quiz)
@@ -250,10 +277,13 @@ def _quiz_tab() -> None:
 
 
 def _suggestions(graph) -> list[str]:
+    from roger.graph import looks_like_test_file
+
     names = [
         str(graph.nodes[n].get("display", n)).removesuffix("()")
-        for n in get_god_nodes(graph, top_n=2)
-    ]
+        for n in get_god_nodes(graph, top_n=6)
+        if not looks_like_test_file(str(graph.nodes[n].get("file") or ""))
+    ][:2]
     ideas = []
     if names:
         ideas.append(f"What calls {names[0]}?")
@@ -273,15 +303,18 @@ def _ask_tab() -> None:
         )
         st.markdown(
             f'<div class="roger-sub">Roger cites the files it read. '
-            f"{_indexed_note()}</div>",
+            f"Answers by {_backend_label()}. {_indexed_note()}</div>",
             unsafe_allow_html=True,
         )
         st.write("")
-        for i, idea in enumerate(_suggestions(graph)):
-            with st.container(key=f"chip{i}"):
-                if st.button(idea, key=f"chipbtn{i}"):
-                    st.session_state.pending_question = idea
-                    st.rerun()
+        ideas = _suggestions(graph)
+        columns = st.columns(len(ideas) or 1)
+        for i, idea in enumerate(ideas):
+            with columns[i]:
+                with st.container(key=f"chip{i}"):
+                    if st.button(idea, key=f"chipbtn{i}"):
+                        st.session_state.pending_question = idea
+                        st.rerun()
 
     for i, turn in enumerate(chat):
         wrapper = "turnuser" if turn["role"] == "user" else "turnroger"
@@ -329,7 +362,9 @@ def main() -> None:
     st.markdown(STYLE, unsafe_allow_html=True)
     repo = Path.cwd().name
     st.markdown(
-        f'<div class="roger-brand"><b>roger</b> · {repo}</div>', unsafe_allow_html=True
+        f'<div class="roger-brand"><span><b>roger</b> · {repo}</span>'
+        f'<span class="backend">{_backend_label()}</span></div>',
+        unsafe_allow_html=True,
     )
     quiz_tab, ask_tab = st.tabs(["Quiz", "Ask"])
     with quiz_tab:
