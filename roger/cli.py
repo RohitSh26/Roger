@@ -543,6 +543,22 @@ def _run_init(config: Config) -> None:
 APP_PATH = Path(__file__).parent / "app.py"
 
 
+def _app_env() -> dict:
+    """Child env for the Streamlit process: telemetry and the first-run
+    email prompt suppressed, the design's light theme pinned — all
+    per-process, never by writing the user's ~/.streamlit. Headless also
+    stops Streamlit opening the browser itself; Roger owns that moment."""
+    from roger.style import THEME_ENV
+
+    env = freshness._scrubbed_env()
+    env.update(
+        STREAMLIT_SERVER_HEADLESS="true",
+        STREAMLIT_BROWSER_GATHER_USAGE_STATS="false",
+    )
+    env.update(THEME_ENV)
+    return env
+
+
 def _free_port() -> int:
     import socket
 
@@ -611,15 +627,7 @@ def app_command() -> None:
     _ensure_streamlit()
 
     port = _free_port()
-    env = freshness._scrubbed_env()
-    env.update(
-        # Suppress Streamlit's first-run email prompt and its usage
-        # telemetry per-process — never by writing the user's global
-        # ~/.streamlit config. Headless also stops Streamlit opening the
-        # browser itself; Roger owns that moment.
-        STREAMLIT_SERVER_HEADLESS="true",
-        STREAMLIT_BROWSER_GATHER_USAGE_STATS="false",
-    )
+    env = _app_env()
     proc = subprocess.Popen(
         [
             sys.executable, "-m", "streamlit", "run", str(APP_PATH),

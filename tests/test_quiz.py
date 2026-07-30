@@ -291,3 +291,39 @@ def test_ensure_streamlit_errors_for_non_tty(monkeypatch) -> None:
     with pytest.raises(typer.Exit) as excinfo:
         cli._ensure_streamlit()
     assert excinfo.value.exit_code == 1
+
+
+# --- the app's visual system (design-review contract) ----------------------------
+
+
+def test_style_is_fully_local() -> None:
+    # The privacy promise: no web fonts, no CDNs, no URLs of any kind.
+    from roger.style import STYLE, THEME_ENV
+
+    assert "http" not in STYLE.lower()
+    assert "url(" not in STYLE.lower()
+    assert "@import" not in STYLE.lower()
+    assert THEME_ENV["STREAMLIT_THEME_BASE"] == "light"  # deliberately pinned
+
+
+def test_style_covers_the_design_states() -> None:
+    from roger.style import STYLE
+
+    for marker in (
+        "stateok", "stateno", "stateans", "statemut",   # graded option rows
+        "st-key-primary", "st-key-nextbtn", "st-key-chip",
+        "turnuser", "turnroger", "roger-thinking", "roger-why",
+    ):
+        assert marker in STYLE, marker
+
+
+def test_app_env_pins_theme_and_privacy(monkeypatch) -> None:
+    from roger import cli
+
+    monkeypatch.setenv("GRAPHIFY_FORCE", "1")
+    env = cli._app_env()
+    assert env["STREAMLIT_SERVER_HEADLESS"] == "true"
+    assert env["STREAMLIT_BROWSER_GATHER_USAGE_STATS"] == "false"
+    assert env["STREAMLIT_THEME_BASE"] == "light"
+    assert env["STREAMLIT_THEME_PRIMARY_COLOR"] == "#0071E3"
+    assert "GRAPHIFY_FORCE" not in env  # footgun scrubbed, as everywhere
