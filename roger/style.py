@@ -73,8 +73,8 @@ h1, [data-testid="stMarkdownContainer"] h1{ font-size:2.5rem; line-height:1.14; 
   background:var(--card); color:var(--ink); font-weight:600;
   box-shadow:0 1px 2px rgba(60,44,24,.09); }
 
-/* ---------- answer option rows (div.stButton > button) ---------- */
-div.stButton > button{
+/* ---------- answer option rows (div.stButton button) ---------- */
+div.stButton button{
   all:unset; box-sizing:border-box; display:flex; align-items:center; gap:13px;
   width:100%; padding:12px 16px; margin:0 0 9px;
   border:1px solid var(--line); border-radius:11px; background:var(--card);
@@ -83,66 +83,66 @@ div.stButton > button{
   transition:border-color .16s ease, background .16s ease,
              transform .16s ease, box-shadow .16s ease;
 }
-div.stButton > button:hover{ border-color:var(--clay); transform:translateY(-1px);
+div.stButton button:hover{ border-color:var(--clay); transform:translateY(-1px);
   box-shadow:0 2px 6px rgba(120,58,26,.08); }
-div.stButton > button:active{ transform:translateY(0); background:var(--sunken); }
-div.stButton > button:focus-visible{ outline:2px solid var(--clay);
+div.stButton button:active{ transform:translateY(0); background:var(--sunken); }
+div.stButton button:focus-visible{ outline:2px solid var(--clay);
   outline-offset:2px; }
 /* the A–D chip */
-div.stButton > button:before{
+div.stButton button:before{
   flex:none; width:23px; height:23px; display:flex; align-items:center;
   justify-content:center; border-radius:7px; background:var(--sunken);
   color:#6B655C; font:700 11.5px var(--mono);
   transition:background .16s ease, color .16s ease;
 }
-[class*="st-key-optA"] div.stButton > button:before{ content:"A"; }
-[class*="st-key-optB"] div.stButton > button:before{ content:"B"; }
-[class*="st-key-optC"] div.stButton > button:before{ content:"C"; }
-[class*="st-key-optD"] div.stButton > button:before{ content:"D"; }
+[class*="st-key-optA"] div.stButton button:before{ content:"A"; }
+[class*="st-key-optB"] div.stButton button:before{ content:"B"; }
+[class*="st-key-optC"] div.stButton button:before{ content:"C"; }
+[class*="st-key-optD"] div.stButton button:before{ content:"D"; }
 
 /* graded states — key fragments: stateok / stateno / stateans / statemut */
-[class*="stateok"] div.stButton > button{ border-color:var(--ok);
+[class*="stateok"] div.stButton button{ border-color:var(--ok);
   background:rgba(76,122,74,.07); pointer-events:none;
   animation:rogReveal .22s ease-out; }
-[class*="stateok"] div.stButton > button:before{ background:var(--ok);
+[class*="stateok"] div.stButton button:before{ background:var(--ok);
   color:#FDFBF7; }
-[class*="stateno"] div.stButton > button{ border-color:var(--no);
+[class*="stateno"] div.stButton button{ border-color:var(--no);
   background:rgba(163,44,34,.055); pointer-events:none;
   animation:rogReveal .22s ease-out; }
-[class*="stateno"] div.stButton > button:before{ background:var(--no);
+[class*="stateno"] div.stButton button:before{ background:var(--no);
   color:#FDFBF7; }
-[class*="stateans"] div.stButton > button{ border-color:var(--ok);
+[class*="stateans"] div.stButton button{ border-color:var(--ok);
   background:var(--card); pointer-events:none; }
-[class*="stateans"] div.stButton > button:before{ background:rgba(76,122,74,.14);
+[class*="stateans"] div.stButton button:before{ background:rgba(76,122,74,.14);
   color:#3C6339; }
-[class*="statemut"] div.stButton > button{ border-color:var(--line-soft);
+[class*="statemut"] div.stButton button{ border-color:var(--line-soft);
   background:var(--paper); color:var(--faint); pointer-events:none; }
-[class*="statemut"] div.stButton > button:before{ background:#F1EBE0;
+[class*="statemut"] div.stButton button:before{ background:#F1EBE0;
   color:#B5AB9C; }
 @keyframes rogReveal{ from{opacity:0; transform:translateY(4px)} to{opacity:1; transform:none} }
 
 /* primary / dark / quiet buttons */
-[class*="st-key-primary"] div.stButton > button{ width:auto;
+[class*="st-key-primary"] div.stButton button{ width:auto;
   justify-content:center; padding:12px 30px; border:none; border-radius:11px;
   background:var(--clay); color:#FDFBF7; font-weight:600;
   box-shadow:0 1px 2px rgba(120,58,26,.28), inset 0 1px 0 rgba(255,255,255,.16); }
-[class*="st-key-primary"] div.stButton > button:before{ content:none; }
-[class*="st-key-primary"] div.stButton > button:hover{
+[class*="st-key-primary"] div.stButton button:before{ content:none; }
+[class*="st-key-primary"] div.stButton button:hover{
   background:var(--clay-press); transform:translateY(-1px); }
-[class*="st-key-next"] div.stButton > button{ width:auto;
+[class*="st-key-next"] div.stButton button{ width:auto;
   justify-content:center; padding:9px 22px; border:none; border-radius:10px;
   background:#211E19; color:var(--card); font-size:13.5px; font-weight:600;
   box-shadow:0 1px 2px rgba(33,30,25,.22), inset 0 1px 0 rgba(255,255,255,.1); }
-[class*="st-key-next"] div.stButton > button:before{ content:none; }
-[class*="st-key-next"] div.stButton > button:hover{ background:#332E27; }
-[class*="st-key-quiet"] div.stButton > button{ width:auto;
+[class*="st-key-next"] div.stButton button:before{ content:none; }
+[class*="st-key-next"] div.stButton button:hover{ background:#332E27; }
+[class*="st-key-quiet"] div.stButton button{ width:auto;
   justify-content:center; padding:10px 24px; border:1px solid #DDD4C4;
   border-radius:10px; font-size:13.5px; font-weight:600; }
-[class*="st-key-quiet"] div.stButton > button:before{ content:none; }
-[class*="st-key-link"] div.stButton > button{ width:auto; padding:6px 0;
+[class*="st-key-quiet"] div.stButton button:before{ content:none; }
+[class*="st-key-link"] div.stButton button{ width:auto; padding:6px 0;
   border:none; background:none; color:#B45A33; font-size:13.5px; }
-[class*="st-key-link"] div.stButton > button:before{ content:none; }
-[class*="st-key-link"] div.stButton > button:hover{ color:#8F4525;
+[class*="st-key-link"] div.stButton button:before{ content:none; }
+[class*="st-key-link"] div.stButton button:hover{ color:#8F4525;
   text-decoration:underline; transform:none; box-shadow:none; }
 
 /* ---------- question caption + explanation ---------- */
@@ -306,6 +306,56 @@ div.stButton > button:before{
   border-color:#E6DFD2; }
 .rog-privacy{ font-size:11.5px; color:var(--faint); text-align:center;
   margin:10px 0 0; }
+
+/* ---------- shared subtitle (used by every view's header) ---------- */
+.rog-sub{ font-size:14px; line-height:1.55; color:var(--ink-2);
+  max-width:56ch; }
+.rog-sub code{ font-family:var(--mono); font-size:12.5px; background:var(--sunken);
+  border:none; border-radius:5px; padding:1px 5px; color:var(--ink-2); }
+
+/* ---------- explore: symbol pickers ---------- */
+[data-testid="stSelectbox"] div[data-baseweb="select"] > div{
+  background:var(--card); border:1px solid var(--line); border-radius:11px;
+  font:400 13.5px var(--sans); color:var(--ink);
+  transition:border-color .16s ease; }
+[data-testid="stSelectbox"] div[data-baseweb="select"] > div:hover{
+  border-color:var(--clay); }
+[data-baseweb="popover"] ul{ background:var(--card);
+  border:1px solid var(--line); border-radius:11px; }
+[data-baseweb="popover"] li{ font:400 13px var(--mono); color:var(--ink-2); }
+[data-baseweb="popover"] li:hover{ background:var(--sunken); color:var(--ink); }
+
+/* ---------- explore: ego card ---------- */
+.rog-ego{ background:var(--card); border:1px solid var(--line);
+  border-radius:13px; padding:18px 20px 16px; margin:4px 0 10px; }
+.rog-ego-name{ font-family:var(--serif); font-size:24px;
+  letter-spacing:-.014em; line-height:1.2; }
+.rog-kind{ display:inline-block; margin-left:10px; padding:2px 9px;
+  border-radius:999px; background:var(--sunken); font:600 10.5px var(--mono);
+  color:#6B655C; text-transform:uppercase; letter-spacing:.06em;
+  vertical-align:4px; }
+.rog-ego-meta{ margin-top:7px; font:400 12px var(--mono); color:var(--muted); }
+
+/* relationship rows — buttons when navigable, quiet divs when not */
+[class*="st-key-nb"] div.stButton button{ padding:8px 12px; margin:0 0 6px;
+  font:400 12.5px/1.4 var(--mono); justify-content:flex-start; }
+[class*="st-key-nb"] div.stButton button:before{ content:none; }
+[class*="st-key-nb"] div.stButton button p{ text-align:left; }
+.rog-edge{ padding:8px 12px; margin:0 0 6px; border:1px solid var(--line-soft);
+  border-radius:11px; font:400 12.5px/1.4 var(--mono); color:var(--ink-2); }
+.rog-edge .rog-rel{ color:var(--faint); }
+
+/* ---------- explore: path stepper ---------- */
+[class*="st-key-hop"] [data-testid="stElementContainer"]{
+  margin:0 auto; width:fit-content; }
+[class*="st-key-hop"] div.stButton button{ width:auto; min-width:230px;
+  justify-content:center; text-align:center; font:400 13.5px var(--mono);
+  padding:11px 22px; margin:0; }
+[class*="st-key-hop"] div.stButton button:before{ content:none; }
+.rog-hopdead{ text-align:center; }
+.rog-hoplink{ text-align:center; font:600 11px var(--mono); color:var(--clay);
+  letter-spacing:.05em; text-transform:uppercase; padding:7px 0; }
+.rog-hoplink span{ color:var(--faint); font-weight:400; }
 
 /* ---------- weld: file bar + code block inside one keyed panel ---------- */
 [class*="st-key-codepanel"] div[data-testid="stVerticalBlock"]{ gap:0; }

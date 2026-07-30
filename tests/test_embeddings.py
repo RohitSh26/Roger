@@ -645,6 +645,30 @@ def test_explain_unknown_symbol_is_none(graph) -> None:
     assert ask.explain_symbol(graph, "FluxCapacitor") is None
 
 
+def test_explain_data_mirrors_explain_symbol(graph) -> None:
+    # The app renders from the structured form — it must agree with the
+    # text verb on resolution and edge coverage.
+    nodes = ask.explain_data(graph, "check_token")
+    assert len(nodes) == 1
+    node = nodes[0]
+    assert node["file"] == "src/auth/token.py"
+    assert node["degree"] == 3
+    incoming = {e["display"] for e in node["incoming"]}
+    assert incoming == {"payments.process_payment", "auth.login", "auth.logout"}
+    assert all(e["relation"] for e in node["incoming"])
+    assert ask.explain_data(graph, "FluxCapacitor") == []
+
+
+def test_path_data_mirrors_connection_path(graph) -> None:
+    result = ask.path_data(graph, "notify", "hash_password")
+    assert "error" not in result
+    assert len(result["links"]) == len(result["hops"]) - 1
+    displays = [h["display"] for h in result["hops"]]
+    assert "payments.process_payment" in displays and "auth.login" in displays
+    assert all(isinstance(link["forward"], bool) for link in result["links"])
+    assert "not in the graph" in ask.path_data(graph, "notify", "Nonexistent")["error"]
+
+
 def test_path_uses_undirected_connectivity(graph) -> None:
     # notify ← process_payment → check_token ← login → hash_password:
     # NO directed path exists — a directed search would say "no path".

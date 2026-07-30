@@ -21,6 +21,7 @@ No CDN assets, ever: system fonts, local Streamlit bundles, nothing else.
 
 from __future__ import annotations
 
+import html
 import re
 import time
 from pathlib import Path
@@ -28,7 +29,7 @@ from pathlib import Path
 import streamlit as st
 
 from roger import freshness
-from roger.ask import answer_question
+from roger.ask import answer_question, explain_data, path_data
 from roger.config import load_config
 from roger.graph import candidate_code_nodes, get_god_nodes, load_graph
 from roger.llm.router import ensure_backend
@@ -389,6 +390,182 @@ def _ask_view(prompt: str | None) -> None:
     chat.append({"role": "assistant", "text": answer, "sources": sources})
 
 
+# --------------------------------------------------------------------------- explore
+
+
+def _explore_options(graph) -> list[str]:
+    """Searchable picker entries — the same code-symbol universe the
+    index uses, by display name (duplicates resolve to every match)."""
+    return sorted({str(graph.nodes[n].get("display") or n) for n in candidate_code_nodes(graph)})
+
+
+def _explore_goto(label: str) -> None:
+    """Neighbor/hop click → explain that symbol (runs before the rerun)."""
+    st.session_state.explore_a = label
+    st.session_state.explore_b = None
+
+
+def _edge_row(edge: dict, known: set[str], key: str) -> None:
+    """One relationship row — a button when the target is navigable,
+    a quiet static row otherwise."""
+    inferred = " · inferred" if edge["confidence"] == "INFERRED" else ""
+    if edge["display"] in known:
+        with st.container(key=f"nb{key}"):
+            st.button(
+                f"{edge['display']} · {edge['relation']}{inferred}",
+                key=f"nbb{key}", help=edge["file"] or None,
+                on_click=_explore_goto, args=(edge["display"],),
+            )
+    else:
+        st.markdown(
+            f'<div class="rog-edge">{html.escape(edge["display"])}'
+            f'<span class="rog-rel"> · {html.escape(edge["relation"])}{inferred}</span></div>',
+            unsafe_allow_html=True,
+        )
+
+
+def _explore_ego(graph, name: str, known: set[str]) -> None:
+    for node in explain_data(graph, name):
+        kind = (
+            f'<span class="rog-kind">{html.escape(node["kind"])}</span>'
+            if node["kind"] else ""
+        )
+        meta = html.escape(node["file"] or "?")
+        if node["location"]:
+            meta += f" · {html.escape(node['location'])}"
+        total = len(node["incoming"]) + len(node["outgoing"])
+        st.markdown(
+            f'<div class="rog-ego"><div class="rog-ego-name">'
+            f'{html.escape(node["display"])}{kind}</div>'
+            f'<div class="rog-ego-meta">{meta} · {total} connections</div></div>',
+            unsafe_allow_html=True,
+        )
+        left, right = st.columns(2)
+        for column, edges, title, tag in (
+            (left, node["incoming"], "Used by", "i"),
+            (right, node["outgoing"], "Uses", "o"),
+        ):
+            with column:
+                st.markdown(
+                    f'<div class="rog-caption">{title.upper()} ({len(edges)})</div>',
+                    unsafe_allow_html=True,
+                )
+                if not edges:
+                    st.markdown(
+                        '<div class="rog-edge">— nothing recorded</div>',
+                        unsafe_allow_html=True,
+                    )
+                for j, edge in enumerate(edges[:30]):
+                    _edge_row(edge, known, f"{tag}{node['id']}{j}")
+                if len(edges) > 30:
+                    st.markdown(
+                        f'<div class="rog-caption">+{len(edges) - 30} more</div>',
+                        unsafe_allow_html=True,
+                    )
+
+
+def _explore_path(graph, start: str, end: str, known: set[str]) -> None:
+    result = path_data(graph, start, end)
+    if "error" in result:
+        st.markdown(
+            f'<div class="rog-sub">{html.escape(result["error"])}</div>',
+            unsafe_allow_html=True,
+        )
+        return
+    hops, links = result["hops"], result["links"]
+    st.markdown(
+        f'<div class="rog-caption">SHORTEST CONNECTION — '
+        f'{len(links)} HOP{"S" if len(links) != 1 else ""}</div>',
+        unsafe_allow_html=True,
+    )
+    for i, hop in enumerate(hops):
+        if hop["display"] in known:
+            with st.container(key=f"hop{i}"):
+                st.button(
+                    hop["display"], key=f"hopb{i}", help=hop["file"] or None,
+                    on_click=_explore_goto, args=(hop["display"],),
+                )
+        else:
+            st.markdown(
+                f'<div class="rog-edge rog-hopdead">{html.escape(hop["display"])}</div>',
+                unsafe_allow_html=True,
+            )
+        if i < len(links):
+            link = links[i]
+            # ↓ = the semantic edge points down the chain, ↑ = it points back.
+            glyph = "↓" if link["forward"] else "↑"
+            conf = (
+                f' <span>{html.escape(link["confidence"].lower())}</span>'
+                if link["confidence"] else ""
+            )
+            st.markdown(
+                f'<div class="rog-hoplink">{glyph} '
+                f'{html.escape(link["relation"])}{conf}</div>',
+                unsafe_allow_html=True,
+            )
+
+
+def _explore_view() -> None:
+    _, graph, _, _ = _load_world()
+    st.markdown("# Walk the code graph")
+    st.markdown(
+        '<div class="rog-sub">Computed straight from the code graph — no '
+        "model runs, nothing leaves this machine, and the answer is the "
+        "same every time. Pick a symbol to see everything connected to "
+        "it; add a second to trace how the two meet.</div>",
+        unsafe_allow_html=True,
+    )
+    st.write("")
+    options = _explore_options(graph)
+    known = set(options)
+    c1, c2 = st.columns(2)
+    with c1:
+        a = st.selectbox(
+            "Symbol", options, index=None, placeholder="Pick a symbol…",
+            key="explore_a", label_visibility="collapsed",
+        )
+    with c2:
+        b = st.selectbox(
+            "Connect to", options, index=None,
+            placeholder="Second symbol — traces the connection",
+            key="explore_b", label_visibility="collapsed",
+        )
+
+    if not a and not b:
+        st.write("")
+        from roger.graph import looks_like_test_file
+
+        starters = [
+            d for d, file in (
+                (
+                    str(graph.nodes[n].get("display") or n),
+                    str(graph.nodes[n].get("file") or ""),
+                )
+                for n in get_god_nodes(graph, top_n=12)
+            ) if d in known and not looks_like_test_file(file)
+        ][:3]
+        if starters:
+            st.markdown(
+                '<div class="rog-caption">BUSIEST SYMBOLS — START HERE</div>',
+                unsafe_allow_html=True,
+            )
+            columns = st.columns([1, 1, 2])
+            for i, display in enumerate(starters):
+                with columns[i]:
+                    with st.container(key=f"linkg{i}"):
+                        st.button(
+                            display, key=f"gostart{i}",
+                            on_click=_explore_goto, args=(display,),
+                        )
+        return
+    if a and b:
+        _explore_path(graph, a, b, known)
+    elif a:
+        _explore_ego(graph, a, known)
+    else:
+        _explore_ego(graph, b, known)
+
+
 # --------------------------------------------------------------------------- main
 
 
@@ -408,18 +585,21 @@ def main() -> None:
     # live at top level and truly pin to the bottom (design structure call).
     try:
         view = st.segmented_control(
-            "view", ["Quiz", "Ask"],
+            "view", ["Quiz", "Ask", "Explore"],
             default=st.session_state.get("view", "Quiz"),
             label_visibility="collapsed", key="viewpick",
         )
     except AttributeError:  # older streamlit
-        view = st.radio("view", ["Quiz", "Ask"], horizontal=True,
+        view = st.radio("view", ["Quiz", "Ask", "Explore"], horizontal=True,
                         label_visibility="collapsed")
     view = view or st.session_state.get("view", "Quiz")
     st.session_state.view = view
 
     if view == "Quiz":
         _quiz_tab()
+        return
+    if view == "Explore":
+        _explore_view()
         return
     prompt = st.chat_input("Ask anything about this codebase…")
     _ask_view(prompt)

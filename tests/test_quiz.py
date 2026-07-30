@@ -314,8 +314,22 @@ def test_style_covers_the_design_states() -> None:
         "st-key-primary", "st-key-next", "st-key-link",
         "turnuser", "turnroger", "rog-thinking", "rog-why",
         "rog-badge", "rog-file", "stButtonGroup",       # v2: badge, code weld, nav
+        "rog-ego", "rog-hoplink", "rog-edge", "rog-sub",  # explore + subtitle
+        "st-key-nb", "st-key-hop", "stSelectbox",
     ):
         assert marker in STYLE, marker
+    # help= tooltips wrap buttons in extra spans — a child combinator here
+    # silently unstyles every button that has a tooltip.
+    assert "div.stButton > button" not in STYLE
+
+
+def test_app_has_the_explore_view() -> None:
+    from pathlib import Path
+
+    source = Path("roger/app.py").read_text(encoding="utf-8")
+    assert '"Quiz", "Ask", "Explore"' in source
+    assert "_explore_view" in source
+    assert "explain_data" in source and "path_data" in source
 
 
 def test_app_env_pins_theme_and_privacy(monkeypatch) -> None:

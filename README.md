@@ -1,20 +1,27 @@
 # Roger
 
-> Roger is a speed regulator for AI-assisted development. It uses a knowledge graph of
-> your codebase and a fully local LLM to quiz you on the code before you commit — keeping
-> your understanding in sync with your output. No cloud, no API keys, no tokens. Just you
-> and your code.
+> Roger keeps human understanding in sync with AI-speed development. It builds
+> a knowledge graph of your codebase and puts it to work — quizzes that keep
+> you honest about your own code, cited answers to your questions, an instant
+> map of what connects to what, and token-free briefings for your AI coding
+> agents. Local-first: by default everything runs on your machine and nothing
+> is uploaded anywhere.
 
 <!-- demo GIF of the terminal quiz goes here -->
 
 AI writes more and more of your team's code. Roger makes sure the *team* still
-understands it. It reads your repository, then does three jobs:
+understands it. It reads your repository, then does four jobs:
 
 - **Quizzes you** on your own code and your team's written decisions — short,
   fair, multiple-choice, built to teach rather than test memory.
 - **Answers questions** about the codebase, with the source and documents it
   used cited underneath.
-- **Briefs AI coding agents** so they stop burning tokens reading whole files.
+- **Maps the connections** — everything that touches a symbol, or the chain
+  linking two pieces of code. Computed from the graph, no AI involved, in the
+  terminal (`roger explain`, `roger path`) or as a clickable browser view.
+- **Briefs AI coding agents** so they stop burning tokens reading whole files
+  — and never spend a cent of yours: agents get retrieval verbs only, never
+  your model backend.
 
 Everything runs on your computer by default. Nothing is uploaded anywhere.
 
@@ -115,13 +122,17 @@ Two options when you want them:
 
 ```bash
 roger -n 10        # a longer session: -n means "number of questions"
-roger app          # quiz and ask in your browser — the Roger app
+roger app          # quiz, ask, and explore in your browser — the Roger app
 ```
 
-**The Roger app** opens in your browser, quizzes you with instant grading
-(click an answer, see the explanation right away), and has an Ask tab where
-you can chat with your codebase. It runs entirely on your machine: the page
-is served from your own computer (127.0.0.1), talks only to your local
+**The Roger app** opens in your browser with three views. *Quiz* grades
+instantly — click an answer, see the explanation right away. *Ask* is a chat
+with your codebase. *Explore* is a clickable map: pick any function or class
+to see everything that uses it and everything it uses, click a neighbor to
+walk the graph, or pick two symbols to trace the shortest chain connecting
+them — no AI involved, instant, and identical every time. The app runs
+entirely on your machine: the page is served from your own computer
+(127.0.0.1), talks only to your local
 Ollama, and stops the moment you press Ctrl-C in the terminal. The first
 time, Roger offers to install the app's engine (Streamlit, ~250 MB of
 Python packages) — one keypress, visible progress, and saying no costs
@@ -272,6 +283,10 @@ with `roger use azure …` or `roger use ollama`.
 **Know before enabling either Azure option for a team:** the code and doc
 excerpts Roger builds questions from are sent to *your company's own Azure*
 — not to Roger, not to anyone else. The default option sends nothing anywhere.
+And whichever option you pick, only `roger` (the quiz), `roger ask`, the app's
+Quiz and Ask views, and the commit guard ever run a model at all — `context`,
+`explain`, `path`, and the app's Explore view are computed from the graph and
+cost nothing on any backend.
 
 ---
 
@@ -328,7 +343,7 @@ nothing to configure in the agent. Undo anytime with `roger agent uninstall`.
 |---|---|
 | `roger` | The main event: sets up on first run, then quizzes you |
 | `roger -n 10` | Quiz with a custom number of questions |
-| `roger app` | Quiz and ask in your browser — all local |
+| `roger app` | Quiz, ask, and explore in your browser — all local |
 | `roger ask "…"` | Answer a question about the codebase, with sources |
 | `roger explain "…"` | Everything the graph knows about one symbol (no AI used) |
 | `roger path "…" "…"` | How two symbols connect (no AI used) |

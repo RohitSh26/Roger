@@ -532,6 +532,107 @@ def connection_path(graph, start: str, end: str) -> Optional[str]:
     return f"Shortest path ({len(hops) - 1} hops):\n  {chain}"
 
 
+def explain_data(graph, name: str) -> list[dict]:
+    """Structured form of explain_symbol for GUI rendering — same
+    resolution, same rationale_for filtering, no text formatting."""
+    out: list[dict] = []
+    for node_id in _resolve_name(graph, name):
+        attrs = graph.nodes[node_id]
+
+        def _edge(other: str, data: dict) -> dict:
+            other_attrs = graph.nodes[other]
+            return {
+                "id": other,
+                "display": str(other_attrs.get("display") or other),
+                "file": str(other_attrs.get("file") or ""),
+                "relation": str(
+                    data.get("relation")
+                    or ("calls" if g.is_call_edge(data) else "related")
+                ),
+                "confidence": str(data.get("confidence") or ""),
+            }
+
+        out.append(
+            {
+                "id": node_id,
+                "display": str(attrs.get("display") or node_id),
+                "file": str(attrs.get("file") or ""),
+                "location": str(attrs.get("source_location") or "").strip(),
+                "kind": str(attrs.get("type") or ""),
+                "degree": graph.degree(node_id),
+                "outgoing": sorted(
+                    (
+                        _edge(v, d)
+                        for _, v, d in graph.out_edges(node_id, data=True)
+                        if d.get("relation") != "rationale_for"
+                    ),
+                    key=lambda e: (e["relation"], e["display"]),
+                ),
+                "incoming": sorted(
+                    (
+                        _edge(u, d)
+                        for u, _, d in graph.in_edges(node_id, data=True)
+                        if d.get("relation") != "rationale_for"
+                    ),
+                    key=lambda e: (e["relation"], e["display"]),
+                ),
+            }
+        )
+    return out
+
+
+def path_data(graph, start: str, end: str) -> dict:
+    """Structured form of connection_path for GUI rendering.
+
+    Returns {"error": str} when unresolvable/unreachable, else
+    {"hops": [node dicts], "links": [edge dicts]} with len(links) ==
+    len(hops) - 1; links[i]["forward"] is the semantic edge direction.
+    """
+    import networkx as nx
+
+    from_nodes = _resolve_name(graph, start)
+    to_nodes = _resolve_name(graph, end)
+    if not from_nodes or not to_nodes:
+        missing = start if not from_nodes else end
+        return {"error": f"'{missing}' is not in the graph."}
+    source, target = from_nodes[0], to_nodes[0]
+    if source == target:
+        return {"error": "Those resolve to the same node."}
+    try:
+        chain = nx.shortest_path(graph.to_undirected(as_view=True), source, target)
+    except nx.NetworkXNoPath:
+        return {
+            "error": (
+                f"No connection between "
+                f"{graph.nodes[source].get('display', source)} and "
+                f"{graph.nodes[target].get('display', target)} in the graph."
+            )
+        }
+    hops = [
+        {
+            "id": n,
+            "display": str(graph.nodes[n].get("display") or n),
+            "file": str(graph.nodes[n].get("file") or ""),
+        }
+        for n in chain
+    ]
+    links = []
+    for a, b in zip(chain, chain[1:]):
+        forward = graph.has_edge(a, b)
+        data = graph.get_edge_data(a, b) if forward else graph.get_edge_data(b, a)
+        links.append(
+            {
+                "relation": str(
+                    data.get("relation")
+                    or ("calls" if g.is_call_edge(data) else "related")
+                ),
+                "confidence": str(data.get("confidence") or ""),
+                "forward": forward,
+            }
+        )
+    return {"hops": hops, "links": links}
+
+
 def _seam_nodes(
     graph, anchors: list[str], per_anchor_cap: int = 6, exclude_tests: bool = True
 ) -> list[tuple[str, int]]:
