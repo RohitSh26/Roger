@@ -399,3 +399,47 @@ def test_snippet_of_empty_file_returns_empty(tmp_path, monkeypatch) -> None:
     (tmp_path / "pkg" / "__init__.py").write_text("", encoding="utf-8")
     attrs = {"file": "pkg/__init__.py", "source_location": "L1", "display": "pkg"}
     assert g.get_source_snippet(attrs) == ""
+
+
+# --- get_interface: contracts, not bodies ----------------------------------------
+
+
+def _iface(tmp_path, monkeypatch, source: str, line: int, file: str = "src/mod.py"):
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / file
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(source, encoding="utf-8")
+    return g.get_interface({"file": file, "source_location": f"L{line}", "display": "x"})
+
+
+def test_interface_captures_decorator_above(tmp_path, monkeypatch) -> None:
+    src = "import x\n\n@retry(times=3)\ndef fetch(url: str) -> bytes:\n    return b''\n"
+    result = _iface(tmp_path, monkeypatch, src, line=4)
+    assert result.startswith("@retry(times=3)")
+    assert "def fetch(url: str) -> bytes:" in result
+    assert "return" not in result  # never the body
+
+
+def test_interface_reads_multiline_signature_to_terminal_colon(tmp_path, monkeypatch) -> None:
+    src = (
+        "def rank(\n"
+        "    hits: dict[str, int],\n"
+        "    limit: int = 10,\n"
+        ") -> list[str]:\n"
+        '    """Order hits by score."""\n'
+        "    return []\n"
+    )
+    result = _iface(tmp_path, monkeypatch, src, line=1)
+    assert ") -> list[str]:" in result          # read past the dict[str, int] colon
+    assert '"""Order hits by score."""' in result  # first docstring line included
+    assert "return []" not in result
+
+
+def test_interface_refuses_non_def_lines(tmp_path, monkeypatch) -> None:
+    # A file-level node (or a moved def) must yield "", never a fake signature.
+    src = '"""Module docstring."""\nVALUE = 3\n'
+    assert _iface(tmp_path, monkeypatch, src, line=1) == ""
+
+
+def test_interface_empty_file_is_empty(tmp_path, monkeypatch) -> None:
+    assert _iface(tmp_path, monkeypatch, "", line=1) == ""

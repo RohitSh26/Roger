@@ -320,6 +320,96 @@ def _block_end_by_braces(lines: list[str], start_idx: int, max_lines: int) -> in
     return end
 
 
+# Relations that carry interface meaning between code entities. Expansion
+# over "ALL relations" measured badly on the real graph: `contains` links
+# files to entities (not classes to methods), and rationale_for drags in
+# large numbers of doc stubs. Class→method is the `method` relation.
+INTERFACE_RELATIONS = {
+    "calls", "indirect_call", "imports", "imports_from", "references",
+    "method", "inherits", "uses", "extends",
+}
+
+# Per-relation phrasing, (out-edge verb, in-edge verb). A blanket
+# "uses/used-by" would tell an agent a class "uses" its own base class.
+RELATION_VERBS = {
+    "calls": ("calls", "called by"),
+    "indirect_call": ("calls indirectly", "indirectly called by"),
+    "imports": ("imports", "imported by"),
+    "imports_from": ("imports from", "imported by"),
+    "references": ("references", "referenced by"),
+    "method": ("has method", "method of"),
+    "inherits": ("inherits from", "inherited by"),
+    "uses": ("uses", "used by"),
+    "extends": ("extends", "extended by"),
+}
+
+_DEF_LINE_RE = re.compile(r"^\s*(async\s+def|def|class)\b")
+_DOCSTRING_QUOTES = ('"""', "'''")
+
+
+def get_interface(attrs: dict, repo_root: Path | None = None) -> str:
+    """The contract of a node: decorators + signature + first docstring
+    line — never the body.
+
+    Field-measured requirements: a meaningful share of defs have a decorator directly
+    ABOVE the recorded line (peek upward), and many have multi-line signatures
+    (read until a line ENDS with ':' — a ':' inside Dict[str, int] must
+    not terminate). Brace languages stop at '{' or ';' (interface decls
+    have no brace). Returns "" when no contract is extractable — callers
+    render a plain fallback, never a fake signature.
+    """
+    file = str(attrs.get("file") or "")
+    if not file:
+        return ""
+    path = (repo_root or Path(".")) / file
+    if not path.is_file():
+        return ""
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    if not lines:
+        return ""
+
+    match = _LOCATION_RE.search(str(attrs.get("source_location") or ""))
+    start_idx = max(0, min((int(match.group(1)) if match else 1) - 1, len(lines) - 1))
+    if not _DEF_LINE_RE.match(lines[start_idx]) and Path(file).suffix.lower() == ".py":
+        return ""  # file-level or moved node: no signature to show
+
+    picked: list[str] = []
+    # Decorators sit directly above the def/class line.
+    up = start_idx - 1
+    while up >= 0 and lines[up].lstrip().startswith("@"):
+        picked.insert(0, lines[up])
+        up -= 1
+
+    brace_style = Path(file).suffix.lower() in _BRACE_EXTS
+    end = start_idx
+    for index in range(start_idx, min(len(lines), start_idx + 8)):
+        picked.append(lines[index])
+        end = index
+        text = lines[index].rstrip()
+        if brace_style and ("{" in text or text.endswith(";")):
+            break
+        if not brace_style and text.endswith(":"):
+            break
+    else:
+        picked.append("    …")
+
+    # First docstring line, if one follows immediately.
+    for index in range(end + 1, min(len(lines), end + 3)):
+        stripped = lines[index].strip()
+        if not stripped:
+            continue
+        if stripped.startswith(_DOCSTRING_QUOTES):
+            doc = stripped.strip("\"'").strip()
+            if doc:
+                picked.append(f'    """{doc}"""')
+        break
+
+    return "\n".join(line.rstrip() for line in picked).strip()
+
+
 def get_source_snippet(
     attrs: dict,
     max_lines: int = 80,

@@ -27,7 +27,7 @@ from rich.markdown import Markdown as RichMarkdown
 from rich.markup import escape
 from rich.panel import Panel
 
-from roger.ask import answer_question, context_pack
+from roger.ask import answer_question, context_pack, interface_pack
 
 from roger.config import (
     CONFIG_PATH,
@@ -880,6 +880,12 @@ the relevant source (complete functions), the team's recorded decisions
 (ADRs, contracts), and call relationships in one budgeted, cited pack —
 it typically replaces 5-7 tool calls and thousands of tokens.
 
+RULE 1b — building ON TOP of an existing layer (vertical-stack subtasks)?
+Add --interfaces for breadth instead of depth: every relevant signature,
+docstring, and relationship, no function bodies:
+
+    roger context --interfaces "<your subtask>"
+
 RULE 2 — if the pack answers the question, STOP. Its code blocks are
 VERBATIM source, mechanically extracted seconds ago — no AI wrote or
 summarized them. Re-reading a cited file returns byte-identical text;
@@ -1081,6 +1087,11 @@ def context(
     budget: int = typer.Option(
         2000, "--budget", help="Token budget for the pack (approximate)."
     ),
+    interfaces: bool = typer.Option(
+        False, "--interfaces",
+        help="Contracts only — signatures, docstrings, relationships; no "
+        "bodies. Breadth over depth, for building on an existing layer.",
+    ),
 ) -> None:
     """Print a cited context pack for a question — built for coding agents.
 
@@ -1101,11 +1112,15 @@ def context(
         embeddings.self_heal_index(config, config.graph.path)
     # Plain stdout — agents consume this; no panels, no colors.
     started = time.monotonic()
-    pack = context_pack(question, graph, config, budget_tokens=budget)
+    if interfaces:
+        pack = interface_pack(question, graph, config, budget_tokens=budget)
+    else:
+        pack = context_pack(question, graph, config, budget_tokens=budget)
     activity.log_event(
         "context",
         question=question[:200],
         budget=budget,
+        mode="interfaces" if interfaces else "full",
         tokens_served=len(pack) // 4,
         matched="No matching code" not in pack,
         duration_ms=int((time.monotonic() - started) * 1000),

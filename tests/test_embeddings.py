@@ -488,3 +488,56 @@ def test_one_poisoned_node_never_kills_the_build(indexed, monkeypatch) -> None:
     assert stats is not None
     assert stats.skipped == 1
     assert stats.embedded == 10  # everyone else still made it
+
+
+# --- interface packs (vertical-stack contract briefings) --------------------------
+
+
+def _relgraph():
+    import networkx as nx
+
+    graph = nx.DiGraph()
+    for node_id in ("api.handle", "core.rank", "core.store", "util.hub", "docs.stub"):
+        graph.add_node(node_id, display=node_id.split(".")[-1], file=f"src/{node_id.replace('.', '/')}.py")
+    graph.add_edge("api.handle", "core.rank", relation="calls")
+    graph.add_edge("api.handle", "util.hub", relation="references")
+    graph.add_edge("core.store", "util.hub", relation="references")
+    graph.add_edge("api.handle", "docs.stub", relation="rationale_for")  # junk relation
+    return graph
+
+
+def test_seam_ranks_by_anchor_multiplicity_and_whitelists(monkeypatch) -> None:
+    graph = _relgraph()
+    seam = ask._seam_nodes(graph, ["api.handle", "core.store"])
+    ids = [n for n, _ in seam]
+    assert ids[0] == "util.hub"          # touched by BOTH anchors → first
+    assert "core.rank" in ids            # calls relation admitted
+    assert "docs.stub" not in ids        # rationale_for excluded
+
+
+def test_seam_caps_per_anchor(monkeypatch) -> None:
+    import networkx as nx
+
+    graph = nx.DiGraph()
+    graph.add_node("a", display="a", file="src/a.py")
+    for i in range(20):
+        graph.add_node(f"n{i}", display=f"n{i}", file=f"src/n{i}.py")
+        graph.add_edge("a", f"n{i}", relation="calls")
+    seam = ask._seam_nodes(graph, ["a"], per_anchor_cap=6)
+    assert len(seam) == 6
+
+
+def test_interface_pack_budget_fills_whole_cards(graph, monkeypatch) -> None:
+    monkeypatch.setattr(embeddings, "semantic_rank", lambda *a, **k: None)
+    monkeypatch.setattr(embeddings, "load_card_texts", lambda: {})
+    pack = ask.interface_pack("how is a payment charged and refunded", graph, Config())
+    assert "# Roger interfaces:" in pack
+    assert "VERBATIM" in pack
+    assert "bodies are omitted" in pack.lower()
+
+
+def test_interface_pack_no_match_says_so(graph, monkeypatch) -> None:
+    monkeypatch.setattr(embeddings, "semantic_rank", lambda *a, **k: None)
+    monkeypatch.setattr(embeddings, "load_card_texts", lambda: {})
+    pack = ask.interface_pack("zzz qqq xyzzy", graph, Config())
+    assert "No matching code found" in pack

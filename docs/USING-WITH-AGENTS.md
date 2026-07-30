@@ -181,6 +181,29 @@ once when the container is first built. If you already have one, chain with
   under `[ollama]` in `.roger/config.toml` — that special hostname is how
   containers reach the machine they run on.
 
+## Vertical-stack workflows: interfaces, not implementations
+
+If you split a feature into stacked subtasks — agent 2 builds on the layer
+agent 1 wrote — the second agent usually doesn't need whole files or even
+whole functions. It needs the *contracts* of the layer below: signatures,
+docstrings, and who-calls-whom. That's what the interfaces pack is for:
+
+```bash
+roger context --interfaces "wire the retry policy into the payment worker"
+```
+
+Instead of 3 fully expanded functions, the same token budget carries
+20-30 contracts: `class SearchClient(Protocol):` with its method list,
+the exact signature of the function you'll call, which files import it,
+plus the one most relevant design doc section. Bodies are omitted on
+purpose — `roger context` (without the flag) expands full code when the
+agent genuinely needs to read an implementation.
+
+One rule for stacked agents: **run `roger update` between stack layers.**
+The graph only knows code that has been indexed — agent 2 cannot see the
+interfaces agent 1 just wrote until the map refreshes (it takes seconds
+and shows its progress).
+
 ## How to tell it's working (and worth it)
 
 - **See what your agent saw:** run the identical command yourself —

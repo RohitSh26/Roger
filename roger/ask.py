@@ -297,6 +297,149 @@ def context_pack(
     return pack
 
 
+def _seam_nodes(
+    graph, anchors: list[str], per_anchor_cap: int = 6
+) -> list[tuple[str, int]]:
+    """Boundary nodes 1 hop from the anchors over interface relations,
+    ranked by how many distinct anchors touch them.
+
+    Measured on the real graph: uncapped 1-hop from 12 anchors reached far
+    nodes (far past any budget) because hub nodes have very high degree. Per-anchor,
+    prefer specific neighbors (low degree) over hubs; globally, a node
+    touched by 3 anchors is signal while one touched by 1 is noise.
+    """
+    anchor_set = set(anchors)
+    touched: dict[str, set[str]] = {}
+    for anchor in anchors:
+        neighbors: list[tuple[int, str]] = []
+        for src, dst, data in graph.in_edges(anchor, data=True):
+            if data.get("relation") in g.INTERFACE_RELATIONS and src not in anchor_set:
+                neighbors.append((graph.degree(src), src))
+        for src, dst, data in graph.out_edges(anchor, data=True):
+            if data.get("relation") in g.INTERFACE_RELATIONS and dst not in anchor_set:
+                neighbors.append((graph.degree(dst), dst))
+        for _, node_id in sorted(set(neighbors))[:per_anchor_cap]:
+            touched.setdefault(node_id, set()).add(anchor)
+    ranked = sorted(touched.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+    return [(node_id, len(anchors_)) for node_id, anchors_ in ranked]
+
+
+def _relation_lines(graph, node_id: str, limit: int = 6) -> str:
+    """Per-relation, direction-aware relationship summary for one node."""
+    by_verb: dict[str, list[str]] = {}
+    for _, dst, data in graph.out_edges(node_id, data=True):
+        verbs = g.RELATION_VERBS.get(str(data.get("relation")))
+        if verbs:
+            by_verb.setdefault(verbs[0], []).append(
+                str(graph.nodes[dst].get("display", dst))
+            )
+    for src, _, data in graph.in_edges(node_id, data=True):
+        verbs = g.RELATION_VERBS.get(str(data.get("relation")))
+        if verbs:
+            by_verb.setdefault(verbs[1], []).append(
+                str(graph.nodes[src].get("display", src))
+            )
+    parts = []
+    for verb in sorted(by_verb):
+        names = sorted(set(by_verb[verb]))
+        shown = ", ".join(names[:limit])
+        more = f" (+{len(names) - limit})" if len(names) > limit else ""
+        parts.append(f"{verb}: {shown}{more}")
+    return " | ".join(parts)
+
+
+def _interface_card(graph, node_id: str) -> Optional[str]:
+    """One contract card: signature + docstring line + relationships.
+    File nodes render as a module line, never a fake signature; nodes
+    whose file is gone render as name + relationships only."""
+    attrs = graph.nodes[node_id]
+    display = str(attrs.get("display") or node_id)
+    file = str(attrs.get("file") or "")
+    relations = _relation_lines(graph, node_id)
+    if display == Path(file).name and file:
+        head = f"module {file}"
+        doc = str(attrs.get("description") or "")
+        body = f" — {doc[:120]}" if doc and doc != display else ""
+        card = f"{head}{body}"
+    else:
+        contract = g.get_interface(attrs)
+        if contract:
+            language = language_for_file(file)
+            card = f"{display} ({file})\n```{language}\n{contract}\n```"
+        elif file:
+            card = f"{display} ({file})"
+        else:
+            return None  # sourceless external — appears in others' relations
+    if relations:
+        card += f"\n{relations}"
+    return card
+
+
+def interface_pack(
+    question: str,
+    graph,
+    config: Optional[Config] = None,
+    budget_tokens: int = 2_000,
+) -> str:
+    """Contracts, not contents: the interfaces relevant to one task.
+
+    Built for vertical-stack agent work — agent N+1 building on the layer
+    below needs signatures, docstrings, and relationships, not bodies.
+    Zero LLM calls. Budget is FILLED card by card, never truncated
+    mid-card: a dropped load-bearing contract is worse than a shorter
+    list, so the cut happens at card boundaries with the remainder named.
+    """
+    config = config or Config()
+    max_chars = max(2_000, budget_tokens * 4)
+    anchors = retrieve_nodes(graph, question, config, top=10)
+    if not anchors:
+        return (
+            f"# Roger interfaces: {question}\n\n"
+            "No matching code found. Try naming a function, class, or file — "
+            "or the graph may need `roger update`."
+        )
+    seam = _seam_nodes(graph, anchors)
+
+    header = (
+        f"# Roger interfaces: {question}\n\n"
+        "> Contracts only — signatures, docstrings, and relationships, "
+        "extracted VERBATIM from source just now (not AI-generated). "
+        "Bodies are omitted by design; `roger context` expands full code.\n"
+    )
+    # Doc context is budgeted BEFORE the cards — appending it after would
+    # overflow the cap (field-measured 8.6k against an 8k budget).
+    doc_note = ""
+    sections = find_relevant_sections(question, config.docs.paths, top=1)
+    if sections:
+        section = sections[0]
+        doc_note = (
+            f"\n\n### Design context: {section.file} § {section.heading}\n"
+            + _md_excerpt(section.text, 12)
+        )
+
+    blocks: list[str] = []
+    skipped: list[str] = []
+    used = len(header) + len(doc_note) + 400  # 400 ≈ the More-contracts index
+    for node_id in anchors + [n for n, _ in seam]:
+        card = _interface_card(graph, node_id)
+        if card is None:
+            continue
+        entry = f"\n## {card}" if not card.startswith("module ") else f"\n## {card}"
+        if used + len(entry) > max_chars - 200:
+            skipped.append(str(graph.nodes[node_id].get("display", node_id)))
+            continue
+        blocks.append(entry)
+        used += len(entry)
+    more = (
+        "\n\n### More contracts (not expanded)\n"
+        + ", ".join(skipped[:20])
+        + "\n\nNarrow the question or raise --budget to expand them."
+        if skipped
+        else ""
+    )
+    return header + "".join(blocks) + doc_note + more
+
+
 def answer_question(question: str, graph, config: Optional[Config] = None) -> tuple[str, list[str]]:
     """Answer a question about the repo. Returns (markdown answer, sources)."""
     config = config or Config()

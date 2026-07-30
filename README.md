@@ -315,6 +315,7 @@ nothing to configure in the agent. Undo anytime with `roger agent uninstall`.
 | `roger app` | Quiz and ask in your browser — all local |
 | `roger ask "…"` | Answer a question about the codebase, with sources |
 | `roger context "…"` | A cited briefing for AI agents (no AI used) |
+| `roger context --interfaces "…"` | Contracts only — signatures and relationships, no bodies |
 | `roger agent install` | Teach agents in this repo to use Roger |
 | `roger log` | See what was recently asked of Roger — including by your agents |
 | `roger guard install` | Quiz on staged changes before every commit |
