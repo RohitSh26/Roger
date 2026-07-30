@@ -1618,13 +1618,17 @@ def test_context_pack_declares_provenance(graph: nx.DiGraph) -> None:
 def test_agent_snippet_rules_are_binding() -> None:
     from roger.cli import AGENT_SNIPPET
 
-    # The four numbered rules agents must follow (Kimi field feedback:
-    # loose guidance gets overlooked; rules with STOP conditions don't).
-    for marker in ("RULE 1", "RULE 2", "RULE 3", "RULE 4"):
+    # The numbered rules agents must follow (field feedback: loose
+    # guidance gets overlooked; rules with STOP conditions don't).
+    for marker in ("RULE 1", "RULE 2", "RULE 3", "RULE 4", "RULE 5"):
         assert marker in AGENT_SNIPPET
     assert "VERBATIM" in AGENT_SNIPPET   # provenance claim stays
     assert "MODIFY" in AGENT_SNIPPET     # verification still required for writes
     assert "re-query ONCE" in AGENT_SNIPPET  # reformulation before grep fallback
+    # The command palette: right verb for the intent, never copy-paste.
+    for verb in ("roger explain", "roger path", "--interfaces"):
+        assert verb in AGENT_SNIPPET
+    assert "never run `roger ask`" in AGENT_SNIPPET  # agents reason themselves
 
 
 def test_code_matcher_never_surfaces_markdown_or_skill_files(graph: nx.DiGraph) -> None:

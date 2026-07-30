@@ -434,6 +434,104 @@ def relational_facts(question: str, graph) -> Optional[tuple[str, list[str]]]:
     return None
 
 
+def _edge_line(graph, here: str, other: str, data: dict, outgoing: bool) -> str:
+    display = str(graph.nodes[other].get("display", other))
+    relation = data.get("relation") or ("calls" if g.is_call_edge(data) else "related")
+    confidence = data.get("confidence")
+    tag = f" [{confidence}]" if confidence else ""
+    arrow = "-->" if outgoing else "<--"
+    return f"  {arrow} {display} [{relation}]{tag}"
+
+
+def explain_symbol(graph, name: str) -> Optional[str]:
+    """Everything the graph knows about one symbol — zero LLM, complete.
+
+    The agent-facing sibling of graphify's own `explain` verb, computed on
+    Roger's normalized graph: location, degree, and every relationship
+    with its relation kind and confidence tag (EXTRACTED = explicit in
+    source, INFERRED = derived by resolution).
+    """
+    nodes = _resolve_name(graph, name)
+    if not nodes:
+        return None
+    blocks = []
+    for node_id in nodes:
+        attrs = graph.nodes[node_id]
+        display = str(attrs.get("display") or node_id)
+        file = str(attrs.get("file") or "?")
+        location = str(attrs.get("source_location") or "").strip()
+        kind = str(attrs.get("type") or "")
+        lines = [f"Node: {display}"]
+        lines.append(f"  File:   {file}" + (f" {location}" if location else ""))
+        if kind:
+            lines.append(f"  Kind:   {kind}")
+        lines.append(f"  Degree: {graph.degree(node_id)}")
+        # rationale_for edges point at doc-stub sentence nodes — graph
+        # bookkeeping, not code relationships.
+        out_edges = sorted(
+            _edge_line(graph, node_id, v, d, outgoing=True)
+            for _, v, d in graph.out_edges(node_id, data=True)
+            if d.get("relation") != "rationale_for"
+        )
+        in_edges = sorted(
+            _edge_line(graph, node_id, u, d, outgoing=False)
+            for u, _, d in graph.in_edges(node_id, data=True)
+            if d.get("relation") != "rationale_for"
+        )
+        edges = out_edges + in_edges
+        lines.append(f"\nConnections ({len(edges)}):")
+        lines.extend(edges[:40])
+        if len(edges) > 40:
+            lines.append(f"  … (+{len(edges) - 40} more)")
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
+
+
+def connection_path(graph, start: str, end: str) -> Optional[str]:
+    """The shortest chain connecting two symbols — zero LLM.
+
+    Pathfinding runs on the UNDIRECTED projection: edge direction is
+    semantic (A imports B), but connectivity is not — measured on a real
+    graph, only ~2% of connected pairs have a purely directed path, so a
+    directed search would answer "no path" almost always.
+    """
+    import networkx as nx
+
+    from_nodes = _resolve_name(graph, start)
+    to_nodes = _resolve_name(graph, end)
+    if not from_nodes or not to_nodes:
+        missing = start if not from_nodes else end
+        return f"'{missing}' is not in the graph. Check the name, or run: roger update"
+    source, target = from_nodes[0], to_nodes[0]
+    if source == target:
+        return "Those resolve to the same node."
+    try:
+        hops = nx.shortest_path(graph.to_undirected(as_view=True), source, target)
+    except nx.NetworkXNoPath:
+        return (
+            f"No connection found between "
+            f"{graph.nodes[source].get('display', source)} and "
+            f"{graph.nodes[target].get('display', target)} in the graph."
+        )
+    parts = [str(graph.nodes[hops[0]].get("display", hops[0]))]
+    for a, b in zip(hops, hops[1:]):
+        if graph.has_edge(a, b):
+            data = graph.get_edge_data(a, b)
+            arrow_open, arrow_close = "--", "-->"
+        else:
+            data = graph.get_edge_data(b, a)
+            arrow_open, arrow_close = "<--", "--"
+        relation = data.get("relation") or ("calls" if g.is_call_edge(data) else "related")
+        confidence = data.get("confidence")
+        tag = f" [{confidence}]" if confidence else ""
+        parts.append(
+            f" {arrow_open}{relation}{tag}{arrow_close} "
+            f"{graph.nodes[b].get('display', b)}"
+        )
+    chain = "".join(parts)
+    return f"Shortest path ({len(hops) - 1} hops):\n  {chain}"
+
+
 def _seam_nodes(
     graph, anchors: list[str], per_anchor_cap: int = 6, exclude_tests: bool = True
 ) -> list[tuple[str, int]]:

@@ -878,34 +878,40 @@ AGENT_SNIPPET_END = "<!-- roger:end -->"
 AGENT_SNIPPET = f"""{AGENT_SNIPPET_START}
 ## Roger — MANDATORY first step for codebase questions
 
-RULE 1 — Roger FIRST, always. For ANY question about this codebase ("how
-does X work", "where is Y handled", "what calls Z"), your FIRST action is:
+Roger answers from a pre-built code graph and verbatim source. One call
+replaces 5-7 greps and file reads. Pick the verb that matches the intent —
+and FORMULATE the query yourself (extract the symbol or likely code
+vocabulary; never paste the user's sentence verbatim):
 
-    roger context "<your question>" --budget 2000
+    roger explain "<symbol>"      one function/class/file: where it lives,
+                                  every caller, callee, import, reference
+    roger path "<A>" "<B>"        how two symbols or files are connected
+    roger context "<topic>"       working in an area: cited source pack
+                                  with complete function bodies
+    roger context --interfaces "<task>"
+                                  building on an existing layer: signatures,
+                                  docstrings, relationships — no bodies
 
-Never grep, search, or open files as a first step. One Roger call returns
-the relevant source (complete functions), the team's recorded decisions
-(ADRs, contracts), and call relationships in one budgeted, cited pack —
-it typically replaces 5-7 tool calls and thousands of tokens.
+RULE 1 — Roger FIRST, always. For ANY question about this codebase, your
+FIRST action is one of the verbs above. Never grep, search, or open files
+as a first step. "What calls X?" is `roger explain "X"`, not a grep.
 
-RULE 1b — building ON TOP of an existing layer (vertical-stack subtasks)?
-Add --interfaces for breadth instead of depth: every relevant signature,
-docstring, and relationship, no function bodies:
-
-    roger context --interfaces "<your subtask>"
-
-RULE 2 — if the pack answers the question, STOP. Its code blocks are
+RULE 2 — if the output answers the question, STOP. Code blocks are
 VERBATIM source, mechanically extracted seconds ago — no AI wrote or
-summarized them. Re-reading a cited file returns byte-identical text;
-doing so is pure token waste. Answer from the pack and cite its sources.
+summarized them. Re-reading a cited file returns byte-identical text.
+Answer from the output and cite its sources.
 
-RULE 3 — if the pack misses, re-query ONCE with likely code vocabulary
-(e.g. "throttle" → rate limit, backoff, sleep). Only after that second
-miss may you fall back to grep and file reading.
+RULE 3 — if it misses, re-query ONCE with different code vocabulary
+(e.g. "throttle" → rate limit, backoff, sleep) or a more specific verb.
+Only after that second miss may you fall back to grep and file reading.
 
-RULE 4 — the ONLY reasons to open a file the pack already cites: you are
+RULE 4 — the ONLY reasons to open a file Roger already cites: you are
 about to MODIFY that code, a claim lacks a citation, citations conflict,
-or the pack says it was truncated.
+or the output says it was truncated.
+
+RULE 5 — never run `roger ask` or `roger quiz`. Those spin the human's
+own model backend and cost them money or compute. YOU do the reasoning —
+Roger only retrieves.
 {AGENT_SNIPPET_END}"""
 
 agent_app = typer.Typer(help="Teach coding agents to use Roger (no MCP, no server).")
@@ -1087,6 +1093,43 @@ def show_log(
             str(event.get("duration_ms", "—")),
         )
     console.print(table)
+
+
+@app.command()
+def explain(name: str) -> None:
+    """Everything the graph knows about one symbol — no LLM, instant."""
+    _anchor_repo_root()
+    config = _load_config()
+    try:
+        graph = load_graph(config.graph.path)
+    except GraphNotFoundError as exc:
+        _fail(str(exc))
+        return
+    from roger.ask import explain_symbol
+
+    result = explain_symbol(graph, name)
+    activity.log_event("explain", question=name[:200], matched=result is not None)
+    if result is None:
+        typer.echo(f"'{name}' is not in the graph. Check the name, or run: roger update")
+        raise typer.Exit(code=1)
+    typer.echo(result)
+
+
+@app.command("path")
+def path_cmd(start: str, end: str) -> None:
+    """How two symbols connect, over any relationship — no LLM, instant."""
+    _anchor_repo_root()
+    config = _load_config()
+    try:
+        graph = load_graph(config.graph.path)
+    except GraphNotFoundError as exc:
+        _fail(str(exc))
+        return
+    from roger.ask import connection_path
+
+    result = connection_path(graph, start, end)
+    activity.log_event("path", question=f"{start} -> {end}"[:200])
+    typer.echo(result)
 
 
 @app.command()

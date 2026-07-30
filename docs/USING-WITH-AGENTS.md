@@ -181,6 +181,36 @@ once when the container is first built. If you already have one, chain with
   under `[ollama]` in `.roger/config.toml` — that special hostname is how
   containers reach the machine they run on.
 
+## Which Roger verb does an agent use — and whose model answers?
+
+Roger gives agents four retrieval verbs, all **zero-LLM**: they compute
+answers from the code graph and verbatim source, instantly.
+
+| Intent | Verb |
+|---|---|
+| One symbol: where it lives, everything that touches it | `roger explain "<symbol>"` |
+| How two symbols/files connect | `roger path "<A>" "<B>"` |
+| Working in an area: cited pack with full function bodies | `roger context "<topic>"` |
+| Building on a layer: signatures and contracts, no bodies | `roger context --interfaces "<task>"` |
+
+The installed instructions teach agents to pick the verb by intent and to
+**formulate the query themselves** — extracting the symbol or likely code
+vocabulary rather than pasting the user's sentence.
+
+**Whose model does the reasoning?** Always the agent's own — Copilot,
+OpenCode, Claude Code use whatever model *you* selected in that tool, on
+that tool's subscription. The flow: the agent runs a Roger verb as a shell
+command → Roger retrieves (no generation — the only model Roger may touch
+is the optional local embedding lookup, which produces search coordinates,
+not text) → the plain-markdown output lands in the agent's context as tool
+output → the agent's model synthesizes the answer. Roger's own configured
+backend (local Ollama, or Azure) is used **only** by the human commands
+`roger ask` and `roger quiz` — and the agent instructions explicitly
+forbid agents from calling those (RULE 5), precisely so an agent never
+spins your local model or your cloud deployment. `roger log` shows every
+call with its verb and whether a human or an agent made it — that's your
+audit trail.
+
 ## Vertical-stack workflows: interfaces, not implementations
 
 If you split a feature into stacked subtasks — agent 2 builds on the layer

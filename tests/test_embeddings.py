@@ -626,3 +626,45 @@ def test_context_pack_leads_with_graph_facts(graph, monkeypatch) -> None:
     pack = ask.context_pack("what calls check_token?", graph, Config())
     assert "## Graph facts (complete)" in pack
     assert pack.index("Graph facts") < pack.index("### Code:")  # facts lead
+
+
+# --- explain / path: zero-LLM graph verbs for agents ------------------------------
+
+
+def test_explain_lists_every_connection(graph) -> None:
+    result = ask.explain_symbol(graph, "check_token")
+    assert result is not None
+    assert "File:   src/auth/token.py" in result
+    assert "Degree: 3" in result
+    # all three callers appear as incoming edges
+    for name in ("payments.process_payment", "auth.login", "auth.logout"):
+        assert f"<-- {name}" in result
+
+
+def test_explain_unknown_symbol_is_none(graph) -> None:
+    assert ask.explain_symbol(graph, "FluxCapacitor") is None
+
+
+def test_path_uses_undirected_connectivity(graph) -> None:
+    # notify ← process_payment → check_token ← login → hash_password:
+    # NO directed path exists — a directed search would say "no path".
+    result = ask.connection_path(graph, "notify", "hash_password")
+    assert result is not None
+    assert "hops" in result
+    assert "payments.process_payment" in result and "auth.login" in result
+
+
+def test_path_unknown_endpoint_says_which(graph) -> None:
+    result = ask.connection_path(graph, "notify", "Nonexistent")
+    assert "Nonexistent" in result and "not in the graph" in result
+
+
+def test_graph_verbs_need_no_backend(graph, monkeypatch) -> None:
+    from roger.llm import router
+
+    monkeypatch.setattr(
+        router, "ensure_backend",
+        lambda config: pytest.fail("graph verbs must never need a backend"),
+    )
+    assert ask.explain_symbol(graph, "charge") is not None
+    assert "hops" in ask.connection_path(graph, "gateway", "connect")
