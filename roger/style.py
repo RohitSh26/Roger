@@ -203,6 +203,21 @@ div.stButton > button:before{
   font-family:var(--mono); font-size:11.5px; color:var(--muted); }
 .rog-file + [data-testid="stCode"]{ border-radius:0 0 13px 13px; }
 
+/* ---------- markdown doc excerpts: card + tables ---------- */
+[class*="st-key-docpanel"] [data-testid="stMarkdown"]{
+  background:var(--card); border:1px solid var(--line); border-radius:13px;
+  padding:16px 20px 10px; }
+.stMarkdown table{ border-collapse:collapse; width:100%; margin:4px 0 12px;
+  font-size:13.5px; }
+.stMarkdown thead tr{ border-bottom:1px solid var(--line); }
+.stMarkdown th{ font-weight:600; text-align:left; padding:7px 16px 9px 0;
+  color:var(--ink-2); font-size:11.5px; letter-spacing:.05em;
+  text-transform:uppercase; border:none; }
+.stMarkdown td{ padding:8px 16px 8px 0; border:none;
+  border-bottom:1px solid var(--line-soft); vertical-align:top;
+  line-height:1.5; }
+.stMarkdown tbody tr:last-child td{ border-bottom:none; }
+
 /* inline code in markdown */
 .stMarkdown code{ font-family:var(--mono); font-size:.86em;
   background:var(--sunken); border:1px solid #E2DACC; border-radius:6px;

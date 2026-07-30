@@ -328,3 +328,27 @@ def test_app_env_pins_theme_and_privacy(monkeypatch) -> None:
     assert env["STREAMLIT_THEME_BASE"] == "light"
     assert env["STREAMLIT_THEME_PRIMARY_COLOR"] == "#C1683F"
     assert "GRAPHIFY_FORCE" not in env  # footgun scrubbed, as everywhere
+
+
+def test_table_snippets_are_valid_markdown_tables() -> None:
+    # Field regression: table snippets lacked the |---| separator row, so
+    # every renderer collapsed the table into one paragraph of pipes.
+    import random
+
+    from roger.docs import DocSection, table_questions
+
+    text = (
+        "| Command | What it does |\n"
+        "| --- | --- |\n"
+        "| alpha | does a |\n"
+        "| beta | does b |\n"
+        "| gamma | does c |\n"
+        "| delta | does d |\n"
+    )
+    section = DocSection(file="README.md", heading="Commands", text=text)
+    questions = table_questions([section], "medium", random.Random(7), limit=1)
+    assert questions, "expected a table question from a 4-row table"
+    lines = questions[0].snippet.splitlines()
+    assert lines[0].startswith("| ")                      # header
+    assert set(lines[1].replace("|", "").strip()) <= {"-", " "}  # separator row
+    assert len(lines) >= 5

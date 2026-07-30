@@ -174,7 +174,8 @@ def _quiz_question(quiz: dict) -> None:
 
     if question.snippet:
         if question.language == "markdown":
-            st.markdown(question.snippet)
+            with st.container(key=f"docpanel{index}"):
+                st.markdown(question.snippet)
         else:
             language = question.language or language_for_file(file)
             with st.container(key=f"codepanel{index}"):

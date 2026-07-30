@@ -303,8 +303,13 @@ def table_questions(
             continue
         row = rng.choice(candidates)
         distractors = rng.sample([v for v in values if v != row[column]], 3)
+        # A pipe table is only a table to renderers when the separator row
+        # follows the header — without it, every renderer (st.markdown,
+        # Rich) soft-wraps the rows into one paragraph of pipes.
+        separator = ["---"] * len(header)
         snippet = "\n".join(
-            "| " + " | ".join(r) + " |" for r in [header] + rows[:_SNIPPET_LINES]
+            "| " + " | ".join(r) + " |"
+            for r in [header, separator] + rows[:_SNIPPET_LINES]
         )
         questions.append(
             _make_mcq(
