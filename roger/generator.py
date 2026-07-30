@@ -23,6 +23,8 @@ QUESTION_STYLE_VERSION = 14
 
 
 def _model_id(config: Config) -> str:
+    if config.model.provider == "azure-foundry":
+        return f"foundry:{config.model.azure_deployment}"
     if config.model.provider == "azure-anthropic":
         return f"azure:{config.model.azure_deployment}"
     return f"ollama:{config.model.local}"

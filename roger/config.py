@@ -109,11 +109,21 @@ _PROVIDER_ALIASES = {
     "azure-anthropic": "azure-anthropic",
     "azure_anthropic": "azure-anthropic",
     "azureanthropic": "azure-anthropic",
-    "azure-foundry": "azure-anthropic",
-    "azure_foundry": "azure-anthropic",
-    "foundry": "azure-anthropic",
     "anthropic": "azure-anthropic",
+    # Generic Foundry chat-completions (any deployed model: gpt-4o-mini,
+    # Phi, Mistral, Llama…) — the cheap seat. Amended 2026-07-30.
+    "azure-foundry": "azure-foundry",
+    "azure_foundry": "azure-foundry",
+    "azurefoundry": "azure-foundry",
+    "foundry": "azure-foundry",
+    "azure-openai": "azure-foundry",
+    "azure_openai": "azure-foundry",
 }
+
+
+def is_azure_provider(provider: str) -> bool:
+    """Both Azure shapes — Anthropic Messages and generic chat-completions."""
+    return provider.startswith("azure-")
 
 
 def _normalize_provider(raw: Any) -> str:
@@ -122,8 +132,9 @@ def _normalize_provider(raw: Any) -> str:
         return _PROVIDER_ALIASES[key]
     raise ValueError(
         f"✗ Roger: unknown model provider {raw!r} in .roger/config.toml.\n"
-        '  Valid values under [model]: provider = "ollama" (default, local)\n'
-        '  or provider = "azure-anthropic".'
+        '  Valid values under [model]: provider = "ollama" (default, local),\n'
+        '  "azure-anthropic" (Claude on Foundry), or "azure-foundry"\n'
+        '  (any other Foundry-deployed model, e.g. gpt-4o-mini).'
     )
 
 

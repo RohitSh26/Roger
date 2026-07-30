@@ -55,10 +55,14 @@ def test_provider_aliases_normalize(tmp_path) -> None:
 
     from roger.config import load_config
 
-    for raw in ("azure", "Azure-Anthropic", "azure_anthropic", "FOUNDRY"):
+    for raw in ("azure", "Azure-Anthropic", "azure_anthropic", "anthropic"):
         cfg_path = tmp_path / f"{raw.lower()}.toml"
         cfg_path.write_text(f'[model]\nprovider = "{raw}"\n', encoding="utf-8")
         assert load_config(Path(cfg_path)).model.provider == "azure-anthropic", raw
+    for raw in ("FOUNDRY", "azure-foundry", "azure_foundry", "azure-openai"):
+        cfg_path = tmp_path / f"f-{raw.lower()}.toml"
+        cfg_path.write_text(f'[model]\nprovider = "{raw}"\n', encoding="utf-8")
+        assert load_config(Path(cfg_path)).model.provider == "azure-foundry", raw
     ollama_path = tmp_path / "ollama.toml"
     ollama_path.write_text('[model]\nprovider = "local"\n', encoding="utf-8")
     assert load_config(Path(ollama_path)).model.provider == "ollama"

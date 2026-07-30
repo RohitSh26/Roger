@@ -327,7 +327,7 @@ def self_heal_index(config: Config, graph_path: str) -> bool:
 def offer_appropriate(config: Config, reoffer: bool = False) -> bool:
     """Should a human flow offer to enable smarter search? (The TTY gate
     and the actual prompt belong to the CLI; the policy lives here.)"""
-    if config.model.provider == "azure-anthropic":
+    if config.model.provider.startswith("azure-"):
         return False
     if embed_prompt_declined() and not reoffer:
         return False

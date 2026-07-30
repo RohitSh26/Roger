@@ -16,13 +16,20 @@ Ollama LLM (MiniCPM5-1B) to generate questions. Full details in ROGER_SPEC.md.
 
 ## Decisions Already Made — Do Not Revisit
 
-**Local-first LLM; one sanctioned cloud exception (amended 2026-07-27 by Rohit).**
+**Local-first LLM; one sanctioned cloud exception (amended 2026-07-30 by Rohit).**
 The default is fully local via Ollama; if Ollama is not running, raise a clear error
-with setup instructions. The ONLY permitted cloud integration is the opt-in Azure AI
-Foundry Anthropic backend (`[model] provider = "azure-anthropic"`, roger/llm/azure.py):
-key from the AZURE_ANTHROPIC_API_KEY env var only, never from config files; local
-remains the default; the README's privacy note must stay accurate. Do not add any
-other cloud provider, fallback, or auto-switching.
+with setup instructions. The ONLY permitted cloud integration is the user's own
+opt-in Azure AI Foundry resource, reachable through two API shapes (amended
+2026-07-30 by Rohit): `provider = "azure-anthropic"` (Claude deployments,
+Anthropic Messages API, roger/llm/azure.py, key from AZURE_ANTHROPIC_API_KEY)
+and `provider = "azure-foundry"` (any other deployed model — gpt-4o-mini, Phi,
+Mistral, Llama — via OpenAI-style chat-completions, roger/llm/foundry.py, key
+from AZURE_FOUNDRY_API_KEY with AZURE_ANTHROPIC_API_KEY as fallback). Keys from
+env vars only, never from config files; local remains the default; the README's
+privacy note must stay accurate. The foundry payload carries NO sampling params
+and NO token caps — model families disagree on which they accept (the Sonnet 5
+temperature-400 lesson). Do not add any other cloud provider (no direct OpenAI/
+Anthropic/Google APIs), no fallback between backends, no auto-switching.
 
 **Graphify is the only graph/parsing layer.** Do not add tree-sitter, AST parsing, or
 any other code parsing. Graphify (pip: `graphifyy`) handles all of that via its own

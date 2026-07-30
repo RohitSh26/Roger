@@ -227,7 +227,7 @@ roger update
 
 ## Where the AI runs (one-time choice per repository)
 
-Roger's question-writing and answering need an AI model. You have two options,
+Roger's question-writing and answering need an AI model. You have three options,
 and switching between them is one command — no files to edit:
 
 **Option 1 — your own computer (the default).** Private, free, works offline.
@@ -253,7 +253,23 @@ lives only in your terminal session, never in a file. That's deliberate: files
 get committed to git; your key must not be. To avoid retyping it, add that
 line to the file `~/.zshrc` (your terminal's startup file).
 
-**Know before enabling Azure for a team:** with this option, the code and doc
+**Option 3 — a budget model on your company's Azure.** Claude is excellent but
+premium-priced. Azure AI Foundry also serves far cheaper models that are
+plenty for quiz questions and everyday answers — for example, `gpt-4o-mini`
+costs about **1/25th** of Claude Sonnet per token, and `Phi-4-mini` about
+1/40th. Deploy one in your Foundry resource, then:
+
+```bash
+roger use foundry --endpoint https://YOUR-RESOURCE.services.ai.azure.com --deployment gpt-4o-mini
+export AZURE_FOUNDRY_API_KEY="your-key-here"
+```
+
+(If `AZURE_ANTHROPIC_API_KEY` is already set for the same resource, Roger
+reuses it — one Foundry resource has one key.) This works with any model
+deployed in your resource: GPT, Phi, Mistral, Llama. Switch back any time
+with `roger use azure …` or `roger use ollama`.
+
+**Know before enabling either Azure option for a team:** the code and doc
 excerpts Roger builds questions from are sent to *your company's own Azure*
 — not to Roger, not to anyone else. The default option sends nothing anywhere.
 
@@ -323,7 +339,7 @@ nothing to configure in the agent. Undo anytime with `roger agent uninstall`.
 | `roger guard install` | Quiz on staged changes before every commit |
 | `roger update` | Refresh Roger's map of your code by hand |
 | `roger doctor` | Check this environment and print fixes for anything wrong |
-| `roger use ollama` / `roger use azure …` | Choose where the AI runs |
+| `roger use ollama` / `roger use azure …` / `roger use foundry …` | Choose where the AI runs |
 | `roger init` | Set up manually (bare `roger` does this for you) |
 
 ---

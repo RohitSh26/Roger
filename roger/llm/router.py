@@ -156,6 +156,10 @@ def _call_model(prompt: str, config: Config) -> dict:
     """Dispatch one generation request to the configured provider."""
     if config.model.provider == "azure-anthropic":
         return azure.call_azure(prompt, config)
+    if config.model.provider == "azure-foundry":
+        from roger.llm import foundry
+
+        return foundry.call_foundry(prompt, config)
     with _OLLAMA_LOCK:
         return local.call_local(
             prompt,
@@ -169,6 +173,10 @@ def chat_with_model(prompt: str, config: Config) -> str:
     """Free-text dispatch to the configured provider (roger ask)."""
     if config.model.provider == "azure-anthropic":
         return azure.chat_azure(prompt, config)
+    if config.model.provider == "azure-foundry":
+        from roger.llm import foundry
+
+        return foundry.chat_foundry(prompt, config)
     with _OLLAMA_LOCK:
         return local.chat_local(
             prompt,
@@ -182,6 +190,10 @@ def ensure_backend(config: Config) -> None:
     """Raise the provider-appropriate error when generation can't run."""
     if config.model.provider == "azure-anthropic":
         azure.ensure_ready(config)
+    elif config.model.provider == "azure-foundry":
+        from roger.llm import foundry
+
+        foundry.ensure_ready(config)
     elif not local.is_ollama_running(config.ollama.url):
         raise OllamaNotRunningError(local.OLLAMA_NOT_RUNNING_MSG)
 

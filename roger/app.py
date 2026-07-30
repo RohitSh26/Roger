@@ -85,7 +85,7 @@ def _generate_session(count: int) -> None:
 
 def _backend_label() -> str:
     config, _, _, _ = _load_world()
-    if config.model.provider == "azure-anthropic":
+    if config.model.provider.startswith("azure-"):
         return f"Azure Foundry · {config.model.azure_deployment}"
     name = config.model.local.rsplit("/", 1)[-1]
     return f"Ollama · {name}"

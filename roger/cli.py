@@ -31,6 +31,7 @@ from roger.ask import answer_question, context_pack, interface_pack
 
 from roger.config import (
     CONFIG_PATH,
+    is_azure_provider,
     ROGER_DIR,
     Config,
     load_config,
@@ -381,7 +382,7 @@ def _ensure_model_ready(config: Config) -> None:
     are user-managed; their existing error paths already name the remedy.
     Non-TTY callers get the standard error, never a prompt.
     """
-    if config.model.provider == "azure-anthropic" or config.model.local != DEFAULT_MODEL:
+    if is_azure_provider(config.model.provider) or config.model.local != DEFAULT_MODEL:
         return
     from roger.llm.local import MODEL_NOT_REGISTERED_MSG, is_ollama_running
 
@@ -412,13 +413,18 @@ def _ensure_model(config: Config) -> None:
     user's model tag at the MiniCPM base, silently destroying it. Azure
     provider → verify configuration; no Ollama involvement at all.
     """
-    if config.model.provider == "azure-anthropic":
+    if is_azure_provider(config.model.provider):
         try:
-            azure_ensure_ready(config)
+            if config.model.provider == "azure-anthropic":
+                azure_ensure_ready(config)
+            else:
+                from roger.llm.foundry import ensure_ready as foundry_ensure_ready
+
+                foundry_ensure_ready(config)
         except CloudBackendError as exc:
             _fail(str(exc))
         console.print(
-            f"Using Azure Foundry Anthropic deployment "
+            f"Using Azure Foundry deployment "
             f"'{config.model.azure_deployment}' — prompts leave this machine."
         )
         return
@@ -480,7 +486,7 @@ def _run_init(config: Config) -> None:
 
     # 3+4. Ollama installed and running? (Skipped entirely on the Azure
     # provider — nothing local to install.)
-    if config.model.provider != "azure-anthropic":
+    if not is_azure_provider(config.model.provider):
         if shutil.which("ollama") is None:
             _fail(
                 "✗ Roger: Ollama is not installed.\n"
@@ -500,7 +506,7 @@ def _run_init(config: Config) -> None:
     #    downloaded here: it installs (one keypress) the first time a quiz
     #    or question needs it, so setup stays fast and context-only users
     #    never pay ~1.15 GB for a model they don't use.
-    if config.model.provider == "azure-anthropic" or config.model.local != DEFAULT_MODEL:
+    if is_azure_provider(config.model.provider) or config.model.local != DEFAULT_MODEL:
         _ensure_model(config)
 
     # 6-8. .roger/ directory, default config, databases.
@@ -520,7 +526,7 @@ def _run_init(config: Config) -> None:
         f"✓ Graph built: {config.graph.path} "
         f"({graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges)"
     )
-    if config.model.provider == "azure-anthropic":
+    if is_azure_provider(config.model.provider):
         console.print(f"✓ Model ready: {config.model.azure_deployment} (Azure Foundry)")
     elif config.model.local != DEFAULT_MODEL:
         console.print(f"✓ Model ready: {config.model.local} (custom)")
@@ -735,7 +741,7 @@ def quiz(
 
     backend = (
         f"Azure Foundry '{config.model.azure_deployment}'"
-        if config.model.provider == "azure-anthropic"
+        if is_azure_provider(config.model.provider)
         else f"Ollama '{config.model.local}'"
     )
     console.print(
@@ -821,15 +827,18 @@ def update(
 
 @app.command()
 def use(
-    provider: str = typer.Argument(..., help='Backend: "ollama" or "azure"'),
+    provider: str = typer.Argument(
+        ..., help='Backend: "ollama", "azure" (Claude), or "foundry" (any Foundry model)'
+    ),
     endpoint: str = typer.Option("", "--endpoint", help="Azure Foundry endpoint URL"),
-    deployment: str = typer.Option("", "--deployment", help="Azure Claude deployment name"),
+    deployment: str = typer.Option("", "--deployment", help="Foundry deployment name"),
     model: str = typer.Option("", "--model", help="Ollama model name (e.g. qwen2.5:7b)"),
 ) -> None:
     """Switch the generation backend — no TOML editing required.
 
     Examples:
       roger use azure --endpoint https://acme.services.ai.azure.com/anthropic --deployment claude-x
+      roger use foundry --endpoint https://acme.services.ai.azure.com --deployment gpt-4o-mini
       roger use ollama --model qwen2.5:7b-instruct-q4_K_M
       roger use ollama
     """
@@ -842,7 +851,7 @@ def use(
         return
     config.model.provider = target
 
-    if target == "azure-anthropic":
+    if is_azure_provider(target):
         if endpoint:
             config.model.azure_endpoint = endpoint
         if deployment:
@@ -851,18 +860,29 @@ def use(
             _fail(
                 "✗ Roger: the Azure backend needs an endpoint and a deployment "
                 "(first time only):\n"
-                "  roger use azure --endpoint https://<resource>.services.ai.azure.com/anthropic "
-                "--deployment <name>"
+                "  roger use azure --endpoint <endpoint-url> --deployment <name>\n"
+                "  roger use foundry --endpoint <endpoint-url> --deployment gpt-4o-mini"
             )
         save_config(config)
+        flavor = "Anthropic" if target == "azure-anthropic" else "chat-completions"
         console.print(
-            f"✓ Backend: Azure Foundry Anthropic — deployment "
+            f"✓ Backend: Azure Foundry {flavor} — deployment "
             f"'{config.model.azure_deployment}'. Applies to quiz, quiz --web, guard, and ask."
         )
-        if not os.environ.get(AZURE_API_KEY_ENV):
-            console.print(
-                f"  One more step: export {AZURE_API_KEY_ENV}=…  (environment only, never in files)"
-            )
+        if target == "azure-anthropic":
+            if not os.environ.get(AZURE_API_KEY_ENV):
+                console.print(
+                    f"  One more step: export {AZURE_API_KEY_ENV}=…  "
+                    "(environment only, never in files)"
+                )
+        else:
+            from roger.llm.foundry import API_KEY_ENV as FOUNDRY_KEY_ENV, _api_key
+
+            if not _api_key():
+                console.print(
+                    f"  One more step: export {FOUNDRY_KEY_ENV}=…  "
+                    "(environment only, never in files)"
+                )
     else:
         if model:
             config.model.local = model
@@ -976,7 +996,15 @@ def doctor() -> None:
             )
 
         # Backend (matters for ask/quiz; roger context needs none)
-        if config.model.provider == "azure-anthropic":
+        if config.model.provider == "azure-foundry":
+            from roger.llm.foundry import API_KEY_ENV as FOUNDRY_KEY_ENV, _api_key
+
+            check(bool(_api_key()),
+                  f"Azure Foundry backend configured ('{config.model.azure_deployment}')",
+                  f"Azure Foundry selected but no key in {FOUNDRY_KEY_ENV} "
+                  f"(or {AZURE_API_KEY_ENV})",
+                  f"export {FOUNDRY_KEY_ENV}=…")
+        elif config.model.provider == "azure-anthropic":
             check(bool(os.environ.get(AZURE_API_KEY_ENV)),
                   f"Azure backend configured ('{config.model.azure_deployment}')",
                   f"Azure selected but {AZURE_API_KEY_ENV} is not set",

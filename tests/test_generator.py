@@ -1431,6 +1431,186 @@ def test_router_dispatches_to_azure_without_touching_ollama(
     assert all(q.tier in (0, 1) for q in questions)
 
 
+# --- Azure Foundry generic backend (any chat-completions model) ---------------------
+
+
+def _foundry_config():
+    from roger.config import Config, ModelConfig
+
+    return Config(
+        model=ModelConfig(
+            provider="azure-foundry",
+            azure_endpoint="https://acme.services.ai.azure.com",
+            azure_deployment="gpt-4o-mini",
+        )
+    )
+
+
+@pytest.fixture()
+def foundry(monkeypatch: pytest.MonkeyPatch):
+    from roger.llm import foundry as mod
+
+    monkeypatch.setattr(mod, "_working_route", {})
+    monkeypatch.setenv(mod.API_KEY_ENV, "key-f")
+    monkeypatch.delenv(mod._FALLBACK_KEY_ENV, raising=False)
+    return mod
+
+
+def test_foundry_ensure_ready_lists_missing_pieces(monkeypatch: pytest.MonkeyPatch) -> None:
+    from roger.config import Config, ModelConfig
+    from roger.exceptions import CloudBackendError
+    from roger.llm import foundry as mod
+
+    monkeypatch.delenv(mod.API_KEY_ENV, raising=False)
+    monkeypatch.delenv(mod._FALLBACK_KEY_ENV, raising=False)
+    with pytest.raises(CloudBackendError) as excinfo:
+        mod.ensure_ready(Config(model=ModelConfig(provider="azure-foundry")))
+    message = str(excinfo.value)
+    assert "azure_endpoint" in message
+    assert "azure_deployment" in message
+    assert mod.API_KEY_ENV in message
+
+
+def test_foundry_payload_contract_is_pinned(foundry, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The generic chat-completions contract, pinned. Crucially: NO sampling
+    # params and NO token caps — model families disagree on which ones they
+    # accept (the temperature lesson from the Anthropic backend applies
+    # across the catalog), so the payload is model + messages only.
+    sent = {}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        sent.update(url=url, headers=headers, body=json)
+        return FakeResponse(
+            {"choices": [{"message": {"content": "<think>hm</think>the answer"}}]}
+        )
+
+    monkeypatch.setattr(foundry.requests, "post", fake_post)
+    answer = foundry.chat_foundry("prompt text", _foundry_config())
+    assert answer == "the answer"  # thinking-block models get stripped too
+    body = sent["body"]
+    assert set(body) == {"model", "messages"}
+    assert body["model"] == "gpt-4o-mini"
+    assert body["messages"][0] == {"role": "system", "content": foundry.SYSTEM_PROMPT}
+    assert body["messages"][1] == {"role": "user", "content": "prompt text"}
+    assert sent["headers"]["api-key"] == "key-f"
+    assert "/models/chat/completions" in sent["url"]
+
+
+def test_foundry_404_falls_back_to_deployments_route(
+    foundry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        calls.append(url)
+        if "/models/chat/completions" in url:
+            return FakeResponse({}, 404)
+        return FakeResponse({"choices": [{"message": {"content": "ok"}}]})
+
+    monkeypatch.setattr(foundry.requests, "post", fake_post)
+    config = _foundry_config()
+    assert foundry.chat_foundry("p", config) == "ok"
+    assert len(calls) == 2
+    assert "/openai/deployments/gpt-4o-mini/chat/completions" in calls[1]
+    # The working route is remembered — the next call skips the 404 route.
+    assert foundry.chat_foundry("p", config) == "ok"
+    assert len(calls) == 3
+    assert "/openai/deployments/" in calls[2]
+
+
+def test_foundry_auth_and_both_routes_404_errors(
+    foundry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from roger.exceptions import CloudBackendError
+
+    monkeypatch.setattr(foundry.requests, "post", lambda *a, **k: FakeResponse({}, 401))
+    with pytest.raises(CloudBackendError) as excinfo:
+        foundry.chat_foundry("p", _foundry_config())
+    assert foundry.API_KEY_ENV in str(excinfo.value)
+
+    monkeypatch.setattr(foundry.requests, "post", lambda *a, **k: FakeResponse({}, 404))
+    with pytest.raises(CloudBackendError) as excinfo:
+        foundry.chat_foundry("p", _foundry_config())
+    assert "gpt-4o-mini" in str(excinfo.value)
+
+
+def test_foundry_strips_inherited_anthropic_endpoint_suffix(
+    foundry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `roger use foundry` after `roger use azure` inherits the saved
+    # endpoint ending in /anthropic — the generic routes hang off the
+    # resource root, so that suffix must not leak into the URL.
+    from roger.config import Config, ModelConfig
+
+    config = Config(
+        model=ModelConfig(
+            provider="azure-foundry",
+            azure_endpoint="https://acme.services.ai.azure.com/anthropic",
+            azure_deployment="gpt-4o-mini",
+        )
+    )
+    urls = [u for u in foundry._routes(config)]
+    assert all("/anthropic" not in u for u in urls)
+    assert urls[0].startswith("https://acme.services.ai.azure.com/models/")
+
+
+def test_foundry_key_falls_back_to_anthropic_env(
+    foundry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # One Foundry resource usually has one key — reuse the Anthropic one
+    # when the dedicated var isn't set.
+    monkeypatch.delenv(foundry.API_KEY_ENV, raising=False)
+    monkeypatch.setenv(foundry._FALLBACK_KEY_ENV, "shared-key")
+    sent = {}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        sent.update(headers=headers)
+        return FakeResponse({"choices": [{"message": {"content": "ok"}}]})
+
+    monkeypatch.setattr(foundry.requests, "post", fake_post)
+    assert foundry.chat_foundry("p", _foundry_config()) == "ok"
+    assert sent["headers"]["api-key"] == "shared-key"
+
+
+def test_router_dispatches_to_foundry_without_touching_ollama(
+    graph: nx.DiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from roger.llm import foundry as mod
+
+    def no_ollama(*args, **kwargs):
+        raise AssertionError("foundry provider must never touch Ollama")
+
+    monkeypatch.setattr(local, "is_ollama_running", no_ollama)
+    monkeypatch.setattr(local, "call_local", no_ollama)
+    monkeypatch.setenv(mod.API_KEY_ENV, "key-f")
+
+    scoped_raw = {
+        "questions": [
+            {
+                "question": "Why does this code keep only the best hit per artifact?",
+                "options": {"A": "dedupe", "B": "speed", "C": "memory", "D": "tokens"},
+                "correct": "A",
+                "explanation": "e",
+            }
+        ]
+    }
+    monkeypatch.setattr(mod, "call_foundry", lambda prompt, config, **kw: scoped_raw)
+
+    node = get_node(graph, "payments.charge")
+    questions = router.get_questions(node, graph, "medium", 2, config=_foundry_config())
+    assert questions
+    assert all(q.tier in (0, 1) for q in questions)
+
+
+def test_foundry_cache_model_id_is_distinct(graph: nx.DiGraph) -> None:
+    # Cached questions are keyed per backend — a Foundry deployment must
+    # not collide with an Anthropic deployment of the same name.
+    from roger.generator import _model_id
+
+    assert _model_id(_foundry_config()) == "foundry:gpt-4o-mini"
+    assert _model_id(_azure_config()) != _model_id(_foundry_config())
+
+
 # --- roger ask -----------------------------------------------------------------
 
 
