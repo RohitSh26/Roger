@@ -645,6 +645,24 @@ def test_explain_unknown_symbol_is_none(graph) -> None:
     assert ask.explain_symbol(graph, "FluxCapacitor") is None
 
 
+def test_context_caps_open_up_for_cloud_backends() -> None:
+    # Local: trimmed to the small num_ctx window. Cloud: 100k+ windows —
+    # the 40-line class clip made honest models report truncation instead
+    # of answering (field-hit), so azure providers get whole classes.
+    from roger.config import Config, ModelConfig
+
+    local_budget, local_matches, local_lines, _ = ask._context_caps(Config())
+    assert local_lines == 40 and local_matches == 3
+
+    for provider in ("azure-anthropic", "azure-foundry"):
+        budget, matches, lines, chars = ask._context_caps(
+            Config(model=ModelConfig(provider=provider))
+        )
+        assert budget > local_budget
+        assert matches > local_matches
+        assert lines >= 200 and chars >= 10_000
+
+
 def test_explain_data_mirrors_explain_symbol(graph) -> None:
     # The app renders from the structured form — it must agree with the
     # text verb on resolution and edge coverage.

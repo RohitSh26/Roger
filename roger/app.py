@@ -41,12 +41,23 @@ OPTION_KEYS = ("A", "B", "C", "D")
 
 
 @st.cache_resource(show_spinner=False)
-def _load_world():
-    config = load_config()
-    graph = load_graph(config.graph.path)
+def _load_graph_cached(path: str, mtime: float):
+    """Cached per (path, mtime): `roger update` invalidates it naturally."""
+    graph = load_graph(path)
     symbols = candidate_code_nodes(graph)
     files = {str(graph.nodes[n].get("file") or "") for n in symbols}
-    return config, graph, len(symbols), len(files)
+    return graph, len(symbols), len(files)
+
+
+def _load_world():
+    # Config is NOT cached: it's one cheap TOML read, and caching it made
+    # the app keep answering on a stale backend after `roger use …` while
+    # the CLI picked up the switch instantly (field-hit).
+    config = load_config()
+    graph_path = Path(config.graph.path)
+    mtime = graph_path.stat().st_mtime if graph_path.exists() else 0.0
+    graph, symbols, files = _load_graph_cached(config.graph.path, mtime)
+    return config, graph, symbols, files
 
 
 def _node_picker(graph, code_count: int) -> list[str]:

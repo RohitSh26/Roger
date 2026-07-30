@@ -223,16 +223,36 @@ def find_relevant_sections(
     return [section for _, section in scored[:top]]
 
 
+def _context_caps(config: Config) -> tuple[int, int, int, int]:
+    """(total char budget, code matches, per-snippet lines, per-snippet chars).
+
+    The local model's context window is small, so material is trimmed to
+    fit (derived from num_ctx). Cloud deployments have 100k+ windows —
+    feeding them a 40-line clip of a 300-line class makes an honest model
+    report the truncation instead of answering (field-hit: "the class is
+    truncated and does not include event handling"), so there the caps
+    open wide: whole classes, more of them.
+    """
+    if config.model.provider.startswith("azure-"):
+        return 48_000, 6, 240, 12_000
+    return (
+        max(6_000, (config.ollama.num_ctx - 1_200) * 5 // 2),
+        MAX_CODE_MATCHES, 40, _SNIPPET_CHARS,
+    )
+
+
 def build_context(
     graph, question: str, config: Config, max_chars: Optional[int] = None
 ) -> tuple[str, list[str]]:
     """(material for the prompt, human-readable source labels)."""
-    budget = max_chars or max(6_000, (config.ollama.num_ctx - 1_200) * 5 // 2)
+    budget, matches, snippet_lines, snippet_chars = _context_caps(config)
+    if max_chars:
+        budget = max_chars
     blocks: list[str] = []
     sources: list[str] = []
     used = 0
 
-    for node_id in retrieve_nodes(graph, question, config):
+    for node_id in retrieve_nodes(graph, question, config, top=matches):
         node = g.get_node(graph, node_id)
         name = str(node.get("display") or node_id)
         file = str(node.get("file") or "")
@@ -241,7 +261,9 @@ def build_context(
             f"Called by: {', '.join(node['callers'][:8]) or 'none'} | "
             f"Calls: {', '.join(node['callees'][:8]) or 'none'}"
         )
-        snippet = g.get_source_snippet(node, max_lines=40)[:_SNIPPET_CHARS]
+        snippet = g.get_source_snippet(
+            node, max_lines=snippet_lines, max_chars=snippet_chars
+        )
         block = header + (
             f"\n```{language_for_file(file)}\n{snippet}\n```" if snippet else ""
         )
