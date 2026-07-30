@@ -573,3 +573,56 @@ def test_interface_tail_anchors_need_semantic_endorsement(graph, monkeypatch) ->
     card_section = pack.split("More contracts")[0]
     assert "notify" not in card_section                    # tail, unendorsed → gated
     assert "notify" in pack                                # …but visible in the index
+
+
+# --- relational questions: complete, deterministic, zero-LLM ---------------------
+
+
+def test_relational_what_calls_is_complete_and_deterministic(graph) -> None:
+    first = ask.relational_facts("what calls check_token?", graph)
+    second = ask.relational_facts("what calls check_token?", graph)
+    assert first is not None and first == second  # byte-identical every run
+    answer, sources = first
+    # ALL three callers, not a sample (fixture: process_payment, login, logout)
+    assert "`payments.process_payment`" in answer
+    assert "`auth.login`" in answer
+    assert "`auth.logout`" in answer
+    assert "Complete list from the code graph" in answer
+    assert "src/auth/token.py" in sources
+
+
+def test_relational_reverse_direction(graph) -> None:
+    result = ask.relational_facts("what does login call?", graph)
+    assert result is not None
+    answer, _ = result
+    assert "`auth.hash_password`" in answer and "`auth.check_token`" in answer
+
+
+def test_relational_ignores_analytical_questions(graph) -> None:
+    assert ask.relational_facts("how does charge work?", graph) is None
+    assert ask.relational_facts("why do we retry payments twice?", graph) is None
+
+
+def test_relational_unknown_name_falls_through(graph) -> None:
+    assert ask.relational_facts("what calls FluxCapacitor?", graph) is None
+
+
+def test_relational_answer_needs_no_backend(graph, monkeypatch) -> None:
+    # 'what calls X' must answer even with Ollama completely dead.
+    from roger.llm import router
+
+    monkeypatch.setattr(
+        router, "ensure_backend",
+        lambda config: pytest.fail("relational answers must not need a backend"),
+    )
+    monkeypatch.setattr(ask, "ensure_backend", router.ensure_backend)
+    answer, sources = ask.answer_question("who uses charge?", graph, Config())
+    assert "`payments.process_payment`" in answer  # calls charge in the fixture
+
+
+def test_context_pack_leads_with_graph_facts(graph, monkeypatch) -> None:
+    monkeypatch.setattr(embeddings, "semantic_rank", lambda *a, **k: None)
+    monkeypatch.setattr(embeddings, "load_card_texts", lambda: {})
+    pack = ask.context_pack("what calls check_token?", graph, Config())
+    assert "## Graph facts (complete)" in pack
+    assert pack.index("Graph facts") < pack.index("### Code:")  # facts lead

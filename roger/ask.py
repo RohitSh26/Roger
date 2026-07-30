@@ -276,7 +276,15 @@ def context_pack(
     """
     config = config or Config()
     max_chars = max(2_000, budget_tokens * 4)
-    context, sources = build_context(graph, question, config, max_chars=max_chars - 400)
+    # Relational question → lead with the complete graph facts; agents get
+    # the whole picture first, code excerpts after.
+    facts = relational_facts(question, graph)
+    facts_block = ""
+    if facts is not None:
+        facts_block = "## Graph facts (complete)\n" + facts[0] + "\n\n"
+    context, sources = build_context(
+        graph, question, config, max_chars=max_chars - 400 - len(facts_block)
+    )
 
     # Truncation without navigation is lossy; an index makes it precise.
     # List matches that were NOT expanded so the caller can re-query
@@ -310,7 +318,7 @@ def context_pack(
         "Re-reading the cited lines returns identical text.\n\n"
     )
     pack = (
-        f"# Roger context: {question}\n\n{provenance}{context}{more_section}"
+        f"# Roger context: {question}\n\n{provenance}{facts_block}{context}{more_section}"
         "\n\n## Sources\n" + "\n".join(f"- {s}" for s in sources)
     )
     if len(pack) > max_chars:
@@ -325,6 +333,105 @@ def context_pack(
         kept.append("*(truncated at budget — narrow the question or raise --budget)*")
         pack = "\n".join(kept)
     return pack
+
+
+# Relational questions — "what calls X", "where is X used", "what does X
+# import" — have exact, enumerable answers in the graph. Sending them to an
+# LLM with 3 snippets and a capped caller list produced partial answers
+# that differed run to run (field report: asked 'what calls SomeClass'
+# repeatedly, got a different subset each time). Answered from edges:
+# complete, deterministic, zero LLM.
+_RELATIONAL_PATTERNS: list[tuple[str, str]] = [
+    (r"\b(?:what|who|which|where)\s+(?:all\s+)?(?:calls?|invokes?|uses?|imports?|references?)\s+(?:the\s+)?([A-Za-z_][\w.]*)", "in"),
+    (r"\b(?:where|how)\s+is\s+([A-Za-z_][\w.]*)\s+(?:used|called|invoked|referenced|imported)", "in"),
+    (r"\b(?:usages?|callers?|users?|consumers?)\s+of\s+([A-Za-z_][\w.]*)", "in"),
+    (r"\bwhat\s+does\s+([A-Za-z_][\w.]*)\s+(?:call|invoke|use|import|reference|depend\s+on)", "out"),
+    (r"\b(?:callees?|dependencies)\s+of\s+([A-Za-z_][\w.]*)", "out"),
+]
+
+
+def _resolve_name(graph, name: str) -> list[str]:
+    """Node ids whose display or id (or their dotted tail) IS this name."""
+    want = name.lower().removesuffix("()")
+    matches = []
+    for node_id, attrs in graph.nodes(data=True):
+        display = str(attrs.get("display") or node_id).lower().removesuffix("()")
+        for candidate in (display, str(node_id).lower()):
+            if candidate == want or candidate.rsplit(".", 1)[-1] == want:
+                matches.append(node_id)
+                break
+    return matches[:3]  # same name in several places → answer for each
+
+
+def relational_facts(question: str, graph) -> Optional[tuple[str, list[str]]]:
+    """(complete markdown answer, source files) for a relational question,
+    or None when the question isn't relational / the name isn't in the graph.
+
+    Every edge is enumerated — grouped per relation with per-relation
+    verbs — so the answer is the WHOLE picture, not a sample, and is
+    byte-identical on every run.
+    """
+    low = question.lower()
+    for pattern, direction in _RELATIONAL_PATTERNS:
+        match = re.search(pattern, low)
+        if not match:
+            continue
+        nodes = _resolve_name(graph, match.group(1))
+        if not nodes:
+            return None  # relational shape, unknown name → let the LLM try
+        blocks: list[str] = []
+        files: set[str] = set()
+        for node_id in nodes:
+            attrs = graph.nodes[node_id]
+            display = str(attrs.get("display") or node_id)
+            file = str(attrs.get("file") or "")
+            by_verb: dict[str, list[str]] = {}
+            edges = (
+                graph.in_edges(node_id, data=True)
+                if direction == "in"
+                else graph.out_edges(node_id, data=True)
+            )
+            for src, dst, data in edges:
+                relation = data.get("relation")
+                if relation is None and g.is_call_edge(data):
+                    relation = "calls"  # legacy graphs omit relation on calls
+                verbs = g.RELATION_VERBS.get(str(relation))
+                if not verbs:
+                    continue
+                other = src if direction == "in" else dst
+                other_attrs = graph.nodes[other]
+                other_file = str(other_attrs.get("file") or "")
+                label = f"`{other_attrs.get('display', other)}`" + (
+                    f" ({other_file})" if other_file else ""
+                )
+                verb = verbs[1] if direction == "in" else verbs[0]
+                by_verb.setdefault(verb, []).append(label)
+                if other_file:
+                    files.add(other_file)
+            head = f"**`{display}`**" + (f" ({file})" if file else "")
+            if not by_verb:
+                word = "nothing in the graph" if direction == "out" else "no recorded users"
+                blocks.append(f"{head} — {word}.")
+                continue
+            lines = [head]
+            for verb in sorted(by_verb):
+                names = sorted(set(by_verb[verb]))
+                shown = names[:60]
+                more = f"\n  *(+{len(names) - 60} more)*" if len(names) > 60 else ""
+                lines.append(
+                    f"\n{verb} ({len(names)}):\n" + "\n".join(f"- {n}" for n in shown) + more
+                )
+            blocks.append("\n".join(lines))
+            if file:
+                files.add(file)
+        answer = (
+            "\n\n".join(blocks)
+            + "\n\n*Complete list from the code graph — every relationship, "
+            "not a sample. This answer is computed, not generated, so it is "
+            "the same every time.*"
+        )
+        return answer, sorted(files)
+    return None
 
 
 def _seam_nodes(
@@ -514,6 +621,11 @@ def interface_pack(
 def answer_question(question: str, graph, config: Optional[Config] = None) -> tuple[str, list[str]]:
     """Answer a question about the repo. Returns (markdown answer, sources)."""
     config = config or Config()
+    # Relational questions are answered from the graph: complete,
+    # deterministic, and no backend needed at all.
+    facts = relational_facts(question, graph)
+    if facts is not None:
+        return facts
     ensure_backend(config)
     context, sources = build_context(graph, question, config)
     if not context:

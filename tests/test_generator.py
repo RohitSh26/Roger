@@ -1360,10 +1360,11 @@ def test_call_azure_parses_anthropic_response(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_azure_payload_contract_is_pinned(monkeypatch: pytest.MonkeyPatch) -> None:
-    # The full request contract, pinned so no field can silently vanish:
-    # max_tokens is REQUIRED by the Messages API (400 without it);
-    # temperature and system must stay explicit; both auth headers ride
-    # along because Foundry routes disagree on which one they want.
+    # The full request contract, pinned. Crucially: NO sampling params —
+    # Claude Sonnet 5 and Opus 4.7+ reject temperature/top_p/top_k with a
+    # 400 (field-hit: "temperature is deprecated for this model" on a
+    # Sonnet 5 Foundry deployment). max_tokens stays required, and both
+    # auth headers ride along because Foundry routes disagree.
     from roger.llm import azure
 
     monkeypatch.setenv(azure.API_KEY_ENV, "key-123")
@@ -1375,8 +1376,10 @@ def test_azure_payload_contract_is_pinned(monkeypatch: pytest.MonkeyPatch) -> No
 
     monkeypatch.setattr(azure.requests, "post", fake_post)
     azure.chat_azure("prompt", _azure_config())
-    assert sent["body"]["max_tokens"] == 1024
-    assert sent["body"]["temperature"] == 0.7
+    assert sent["body"]["max_tokens"] == 4096
+    assert "temperature" not in sent["body"]
+    assert "top_p" not in sent["body"] and "top_k" not in sent["body"]
+    assert "thinking" not in sent["body"]  # omit = model default, max compat
     assert sent["body"]["system"] == azure.SYSTEM_PROMPT
     assert sent["headers"]["api-key"] == "key-123"
     assert sent["headers"]["anthropic-version"] == azure.ANTHROPIC_VERSION

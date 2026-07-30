@@ -72,8 +72,13 @@ def chat_azure(prompt: str, config: Config, timeout: int = 60) -> str:
             },
             json={
                 "model": config.model.azure_deployment,
-                "max_tokens": 1024,
-                "temperature": 0.7,
+                # No sampling params: Claude Sonnet 5 / Opus 4.7+ REJECT
+                # temperature/top_p/top_k with a 400 ("temperature is
+                # deprecated for this model"). Field-hit on a Sonnet 5
+                # deployment. Steering happens in the prompt.
+                # 4096: Sonnet 5 runs adaptive thinking by default, which
+                # spends from max_tokens — 1024 risks truncated JSON.
+                "max_tokens": 4096,
                 "system": SYSTEM_PROMPT,
                 "messages": [{"role": "user", "content": prompt}],
             },
