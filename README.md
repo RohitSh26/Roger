@@ -107,24 +107,25 @@ model is never fetched at all.
 Press **A**, **B**, **C**, or **D** — just the letter, no Return needed. You
 get the answer and a short explanation immediately, right or wrong. Questions
 are drawn from your actual code, your team's own documents (design decisions,
-contracts), and your system's architecture. Your scores stay on your machine,
-in your repository's `.roger` folder. They are yours — Roger has no dashboard
-for managers and never will.
+contracts), and your system's architecture. Your score is shown to you at the
+end of the session and kept nowhere: Roger stores no quiz history, so there is
+nothing for a manager to dashboard — by design, and forever.
 
 Two options when you want them:
 
 ```bash
 roger -n 10        # a longer session: -n means "number of questions"
-roger quiz --web   # take the quiz in your browser instead — nicer for
-                   # reading code, with syntax colors and diagrams
+roger app          # quiz and ask in your browser — the Roger app
 ```
 
-The browser quiz ends by showing a short code like `BCADB` (your answers).
-To save that session into your history, copy the command it shows you:
-
-```bash
-roger record BCADB
-```
+**The Roger app** opens in your browser, quizzes you with instant grading
+(click an answer, see the explanation right away), and has an Ask tab where
+you can chat with your codebase. It runs entirely on your machine: the page
+is served from your own computer (127.0.0.1), talks only to your local
+Ollama, and stops the moment you press Ctrl-C in the terminal. The first
+time, Roger offers to install the app's engine (Streamlit, ~250 MB of
+Python packages) — one keypress, visible progress, and saying no costs
+nothing: the terminal quiz keeps working as always.
 
 ---
 
@@ -136,10 +137,10 @@ roger ask "why do we retry payments exactly twice?"
 
 Roger finds the relevant code and documents, has its AI model read them, and
 gives you an answer **with the sources listed underneath** so you can verify
-it. Add `--web` to get the answer as a nicely formatted page in your browser:
+it. Prefer a chat in the browser? The Roger app has an Ask tab:
 
 ```bash
-roger ask "how does search ranking work?" --web
+roger app
 ```
 
 If Roger can't find anything relevant, it says so plainly — it does not guess.
@@ -206,8 +207,9 @@ There's an honest skip:
 ROGER_SKIP=1 git commit -m "wip"
 ```
 
-That skips the quiz and notes the skip in your own local history — no shame,
-just a record for you. Remove the guard anytime with `roger guard uninstall`.
+That skips the quiz and notes the skip in your local activity log (see it
+with `roger log`) — no shame, just a record for you. Remove the guard
+anytime with `roger guard uninstall`.
 
 ---
 
@@ -265,7 +267,7 @@ excerpts Roger builds questions from are sent to *your company's own Azure*
 - Commit `.roger/config.toml` too and your repo's settings (model choice,
   question count) arrive with `git clone`. The Azure key is never in a file,
   so this is safe.
-- Quiz history (`.roger/history.db`) is personal. Add it to `.gitignore`.
+- Quiz results are never stored — there is nothing personal to leak.
 
 ---
 
@@ -311,10 +313,8 @@ nothing to configure in the agent. Undo anytime with `roger agent uninstall`.
 |---|---|
 | `roger` | The main event: sets up on first run, then quizzes you |
 | `roger -n 10` | Quiz with a custom number of questions |
-| `roger quiz --web` | The quiz, in your browser |
-| `roger record BCADB` | Save a finished browser quiz to your history |
+| `roger app` | Quiz and ask in your browser — all local |
 | `roger ask "…"` | Answer a question about the codebase, with sources |
-| `roger ask "…" --web` | The same answer, formatted in your browser |
 | `roger context "…"` | A cited briefing for AI agents (no AI used) |
 | `roger agent install` | Teach agents in this repo to use Roger |
 | `roger log` | See what was recently asked of Roger — including by your agents |

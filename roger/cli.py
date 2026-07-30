@@ -60,8 +60,8 @@ from roger.graph import get_god_nodes, get_quizzable_nodes, load_graph
 from roger.hooks.pre_commit import install_hook, run_guard, uninstall_hook
 from roger.llm.local import DEFAULT_MODEL, MODELFILE_CONTENT
 from roger.quiz import QuestionStream, node_display_names, run_quiz
-from roger.storage import init_dbs, record_session
-from roger.webquiz import record_answer_code, render_ask_html, render_quiz_html
+from roger.session import quiz_blueprint
+from roger.storage import init_dbs
 
 app = typer.Typer(
     name="roger",
@@ -453,6 +453,116 @@ def _run_init(config: Config) -> None:
     console.print("  roger ask '...'     — ask a question about the codebase")
 
 
+APP_PATH = Path(__file__).parent / "app.py"
+
+
+def _free_port() -> int:
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def _streamlit_missing_remedy() -> str:
+    """The right install command for THIS environment — a raw pip failure
+    under pipx/uv or a PEP 668 managed Python is exactly the hiccup the
+    Simplicity Doctrine forbids."""
+    import sysconfig
+
+    if "pipx" in sys.prefix:
+        return "pipx inject roger-cli streamlit"
+    if (Path(sysconfig.get_path("stdlib")) / "EXTERNALLY-MANAGED").exists():
+        return f"{sys.executable} -m pip install --user streamlit"
+    return f"{sys.executable} -m pip install streamlit"
+
+
+def _ensure_streamlit() -> None:
+    """Lazy app-dependency install: one keypress, live progress, never in
+    the base install (agents and CI don't pay for a GUI)."""
+    if importlib.util.find_spec("streamlit") is not None:
+        return
+    remedy = _streamlit_missing_remedy()
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        _fail(
+            "✗ Roger: the app needs Streamlit (not installed).\n"
+            f"  Install it with: {remedy}"
+        )
+        return
+    if not typer.confirm(
+        "The Roger app needs Streamlit (~250 MB of Python packages, one time). "
+        "Install now?", default=True,
+    ):
+        console.print("[dim]No install — the terminal quiz and ask work as always.[/dim]")
+        raise typer.Exit(code=0)
+    if "pip install" not in remedy:
+        _fail(f"✗ Roger: this Python is managed externally — install manually:\n  {remedy}")
+        return
+    # No capture: pip's own progress streams to the terminal (doctrine:
+    # anything that doesn't finish in seconds must show progress).
+    result = subprocess.run(remedy.split(), check=False)
+    if result.returncode != 0 or importlib.util.find_spec("streamlit") is None:
+        _fail(f"✗ Roger: Streamlit install failed — try manually:\n  {remedy}")
+
+
+@app.command("app")
+def app_command() -> None:
+    """Open the Roger app in your browser — quiz and ask, all local.
+
+    A foreground process on 127.0.0.1 only: it starts when you run this,
+    stops when you press Ctrl-C, and never talks to anything but your
+    local Ollama.
+    """
+    top = _anchor_repo_root()
+    if top is None:
+        _fail("✗ Roger: run this inside a git repository.")
+        return
+    config = _load_config()
+    if not Path(config.graph.path).exists():
+        _offer_setup(top, config)
+    _ensure_model_ready(config)
+    _ensure_streamlit()
+
+    port = _free_port()
+    env = freshness._scrubbed_env()
+    env.update(
+        # Suppress Streamlit's first-run email prompt and its usage
+        # telemetry per-process — never by writing the user's global
+        # ~/.streamlit config. Headless also stops Streamlit opening the
+        # browser itself; Roger owns that moment.
+        STREAMLIT_SERVER_HEADLESS="true",
+        STREAMLIT_BROWSER_GATHER_USAGE_STATS="false",
+    )
+    proc = subprocess.Popen(
+        [
+            sys.executable, "-m", "streamlit", "run", str(APP_PATH),
+            "--server.address=127.0.0.1", f"--server.port={port}",
+        ],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    url = f"http://127.0.0.1:{port}"
+    import socket
+
+    for _ in range(120):  # first launch imports streamlit: allow ~30s
+        if proc.poll() is not None:
+            _fail("✗ Roger: the app failed to start — run 'roger doctor'.")
+            return
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.25):
+                break
+        except OSError:
+            time.sleep(0.25)
+    webbrowser.open(url)
+    console.print(f"✓ Roger app running at {url} — press Ctrl-C here to stop it.")
+    try:
+        proc.wait()
+    except KeyboardInterrupt:
+        proc.terminate()
+        console.print("Stopped.")
+
+
 def _pick_quiz_nodes(graph, count: int, god_node_weight: bool) -> list[str]:
     """Choose nodes for a whole-repo quiz: up to half god nodes, rest random.
 
@@ -480,7 +590,7 @@ def _pick_quiz_nodes(graph, count: int, god_node_weight: bool) -> list[str]:
 @app.command()
 def quiz(
     web: bool = typer.Option(
-        False, "--web", help="Take the quiz in the browser (highlighted code, no server)."
+        False, "--web", help="Deprecated: opens the Roger app (roger app)."
     ),
     count: int = typer.Option(
         0,
@@ -490,6 +600,12 @@ def quiz(
     ),
 ) -> None:
     """Quiz yourself on this repo (whole repo, config defaults)."""
+    if web:
+        # One-release shim: the static page (and its answer-code dance)
+        # was replaced by the Roger app.
+        console.print("The browser quiz is now the Roger app — starting it.")
+        app_command()
+        return
     _anchor_repo_root()
     config = _load_config()
     try:
@@ -514,88 +630,32 @@ def quiz(
     _ensure_model_ready(config)
 
     # Session size: --count flag wins, else the config value — the
-    # docs/code/design split below scales automatically from it.
+    # docs/code/design split scales automatically from it (see session.py).
     count = count if count > 0 else config.quiz.questions_per_session
-    difficulty = config.quiz.default_difficulty
 
-    # Session blueprint — even split across question categories:
-    # docs (instant, no LLM) open the session, code questions stream in the
-    # middle, one system-design question closes it (generated in the
-    # background while earlier questions are answered).
-    doc_qs = (
-        doc_questions(count=max(1, count // 3), difficulty=difficulty, paths=config.docs.paths)
-        if config.docs.enabled
-        else []
+    stream_iter, names, total = quiz_blueprint(
+        graph, config, count,
+        lambda g_, n: _pick_quiz_nodes(g_, n, config.graph.god_node_weight),
     )
-    design_share = 1 if count >= 4 else 0
-    code_count = max(1, count - len(doc_qs) - design_share)
-    # iter_questions orders cache-hits first internally.
-    node_ids = _pick_quiz_nodes(graph, code_count, config.graph.god_node_weight)
-    names = node_display_names(graph, node_ids)
-    names[DESIGN_NODE_ID] = "system design (module map)"
 
-    if web:
-        # The page is a static file, so it needs every question up front.
-        console.print(f"Generating {count} {difficulty} questions…")
-        try:
-            questions = generate_questions(
-                node_ids, graph, difficulty=difficulty, count=code_count, config=config
-            )
-        except (OllamaNotRunningError, ModelNotRegisteredError, CacheError, CloudBackendError, ValueError) as exc:
-            _fail(str(exc))
-            return
-        random.shuffle(questions)
-        questions = doc_qs + questions  # instant openers first, like the terminal
-        if design_share:
-            questions += get_design_questions(graph, difficulty, design_share, config)
-        if not questions:
-            _fail("✗ Roger: could not generate any questions for this repo.")
-        page = render_quiz_html(
-            questions,
-            session_type="quiz",
-            pass_threshold=config.quiz.pass_threshold,
-            node_names=names,
-        )
-        console.print(f"✓ Quiz ready: {page}")
-        console.print("  Answer in the browser, then run the 'roger record' command it shows.")
-        webbrowser.open(page.resolve().as_uri())
-        return
-
-    # Terminal mode streams: the first question appears as soon as it is
-    # ready, and the next one generates while the developer answers. Doc
-    # questions (instant) are woven between the streamed code questions.
     backend = (
         f"Azure Foundry '{config.model.azure_deployment}'"
         if config.model.provider == "azure-anthropic"
         else f"Ollama '{config.model.local}'"
     )
     console.print(
-        f"Preparing {count} {difficulty} questions via {backend} — "
+        f"Preparing {total} {config.quiz.default_difficulty} questions via {backend} — "
         "the rest generate as you answer…"
     )
 
-    def _design_tail():
-        if design_share:
-            yield from get_design_questions(graph, difficulty, design_share, config)
-
-    stream = QuestionStream(
-        itertools.chain(
-            interleave_questions(
-                iter_questions(
-                    node_ids, graph, difficulty=difficulty, count=code_count, config=config
-                ),
-                doc_qs,
-            ),
-            _design_tail(),
-        )
-    )
+    stream = QuestionStream(stream_iter)
     try:
         result = run_quiz(
             stream,
             session_type="quiz",
             pass_threshold=config.quiz.pass_threshold,
             node_names=names,
-            total=count,
+            total=total,
         )
     except (OllamaNotRunningError, ModelNotRegisteredError, CacheError, CloudBackendError, ValueError) as exc:
         _fail(str(exc))
@@ -603,29 +663,15 @@ def quiz(
 
     if result.total == 0:
         _fail("✗ Roger: could not generate any questions for this repo.")
-    result.commit_hash = freshness.head_commit()
-    try:
-        record_session(result)
-    except CacheError as exc:
-        err_console.print(f"⚠ Roger: quiz finished but history was not saved: {exc}")
 
 
-@app.command()
-def record(code: str) -> None:
-    """Record a finished web quiz session (the page shows the answer code)."""
-    _anchor_repo_root()
-    try:
-        result = record_answer_code(code)
-    except ValueError as exc:
-        _fail(f"✗ Roger: {exc}")
-        return
-    result.commit_hash = freshness.head_commit()
-    try:
-        record_session(result)
-    except CacheError as exc:
-        _fail(f"✗ Roger: session graded but history was not saved: {exc}")
-    verdict = "passed" if result.passed else "failed"
-    console.print(f"✓ Recorded: {result.score}/{result.total} — {verdict}.")
+@app.command(hidden=True)
+def record(code: str = typer.Argument("")) -> None:
+    """(Retired) The web quiz now grades itself — see 'roger app'."""
+    console.print(
+        "The answer-code flow is gone: the web quiz was replaced by the Roger "
+        "app, which grades as you click. Start it with: roger app"
+    )
 
 
 @app.command()
@@ -1039,7 +1085,7 @@ def agent_uninstall() -> None:
 def ask(
     question: str,
     web: bool = typer.Option(
-        False, "--web", help="Render the answer in the browser (markdown, highlighted code)."
+        False, "--web", help="Deprecated: use the Roger app (roger app)."
     ),
 ) -> None:
     """Ask a question about the codebase — answered from graph, source, and docs."""
@@ -1067,10 +1113,10 @@ def ask(
     )
 
     if web:
-        page = render_ask_html(question, answer, sources)
-        console.print(f"✓ Answer ready: {page}")
-        webbrowser.open(page.resolve().as_uri())
-        return
+        console.print(
+            "[dim]--web was replaced by the Roger app (roger app) — "
+            "showing the answer here:[/dim]"
+        )
 
     title = question if len(question) <= 76 else question[:73] + "…"
     console.print(

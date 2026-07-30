@@ -1,8 +1,9 @@
 """Pre-commit guard: quiz on staged changes before a commit lands.
 
-Installed at .git/hooks/pre-commit. Skips are logged, never hidden:
-ROGER_SKIP=1 logs to history.db and exits 0; `git commit --no-verify`
-bypasses the hook at the git level (not observable, so not logged).
+Installed at .git/hooks/pre-commit. ROGER_SKIP=1 notes the skip in
+.roger/activity.log (visible via `roger log`) and exits 0; `git commit
+--no-verify` bypasses the hook at the git level (not observable, so not
+logged).
 """
 
 from __future__ import annotations
@@ -27,7 +28,6 @@ from roger.freshness import is_source_file
 from roger.generator import interleave_questions, iter_questions
 from roger.graph import normalize_path, get_changed_nodes, get_quizzable_nodes, load_graph
 from roger.quiz import QuestionStream, node_display_names, run_quiz
-from roger.storage import record_session, record_skip
 
 HOOK_PATH = Path(".git/hooks/pre-commit")
 
@@ -53,7 +53,10 @@ roger guard
 def run_guard() -> None:
     """Full guard flow. Exits 0 on pass/skip, 1 on a blocking failure."""
     if os.environ.get("ROGER_SKIP"):
-        _log_skip(reason="ROGER_SKIP env var")
+        # The honest skip: noted where roger log can show it, no shame.
+        from roger import activity
+
+        activity.log_event("guard_skip", reason="ROGER_SKIP env var")
         sys.exit(0)
 
     try:
@@ -161,8 +164,6 @@ def run_guard() -> None:
 
     if result.total == 0:
         sys.exit(0)
-    result.commit_hash = freshness.head_commit()  # the parent of the commit being made
-    record_session(result)
 
     if result.passed:
         print("✓ Roger: quiz passed. Proceeding with commit.")
@@ -185,11 +186,6 @@ def _get_staged_files() -> list[str]:
     if proc.returncode != 0:
         return []
     return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
-
-
-def _log_skip(reason: str) -> None:
-    """Record a skip event to history.db."""
-    record_skip(reason=reason, session_type="guard")
 
 
 def _resolved_hooks_dir() -> Path:

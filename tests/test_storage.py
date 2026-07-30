@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 
 from roger import storage
-from roger.models import QuizAnswer, QuizResult
 from tests.conftest import make_question
 
 pytestmark = pytest.mark.usefixtures("in_tmp_repo")
@@ -21,7 +20,6 @@ def test_get_db_path() -> None:
 def test_init_dbs_creates_files() -> None:
     storage.init_dbs()
     assert Path(".roger/cache.db").exists()
-    assert Path(".roger/history.db").exists()
 
 
 def test_cache_miss_returns_none() -> None:
@@ -50,70 +48,6 @@ def test_corrupt_cache_entry_raises_cache_error() -> None:
         conn.commit()
     with pytest.raises(storage.CacheError):
         storage.get_cached_questions("k2")
-
-
-def _make_result(score: int = 2, total: int = 3) -> QuizResult:
-    q1 = make_question(node_id="payments.charge", text="Q1?")
-    q2 = make_question(node_id="db.connect", text="Q2?")
-    q3 = make_question(node_id="payments.charge", text="Q3?")
-    answers = [
-        QuizAnswer(question=q1, user_answer="B", is_correct=True, time_taken_secs=3.0),
-        QuizAnswer(question=q2, user_answer="A", is_correct=False, time_taken_secs=5.0),
-        QuizAnswer(question=q3, user_answer="B", is_correct=True, time_taken_secs=2.0),
-    ]
-    return QuizResult(
-        session_type="quiz",
-        answers=answers,
-        score=score,
-        total=total,
-        passed=True,
-        commit_hash=None,
-        module_scope="src/payments",
-        duration_secs=10.4,
-    )
-
-
-def test_record_session_writes_session_row() -> None:
-    session_id = storage.record_session(_make_result())
-    assert session_id >= 1
-    with sqlite3.connect(storage.get_db_path("history.db")) as conn:
-        conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT * FROM quiz_sessions WHERE id = ?", (session_id,)
-        ).fetchone()
-    assert row["session_type"] == "quiz"
-    assert row["score"] == 2
-    assert row["total"] == 3
-    assert row["passed"]
-    assert not row["skipped"]
-
-
-def test_record_session_records_answers() -> None:
-    session_id = storage.record_session(_make_result())
-    with sqlite3.connect(storage.get_db_path("history.db")) as conn:
-        rows = conn.execute(
-            "SELECT node_id, user_answer, is_correct FROM quiz_answers "
-            "WHERE session_id = ? ORDER BY id",
-            (session_id,),
-        ).fetchall()
-    assert rows == [
-        ("payments.charge", "B", 1),
-        ("db.connect", "A", 0),
-        ("payments.charge", "B", 1),
-    ]
-
-
-def test_record_skip_writes_skip_row() -> None:
-    storage.record_skip("ROGER_SKIP env var")
-    with sqlite3.connect(storage.get_db_path("history.db")) as conn:
-        conn.row_factory = sqlite3.Row
-        row = conn.execute("SELECT * FROM quiz_sessions").fetchone()
-    assert row["session_type"] == "guard"
-    assert row["skip_reason"] == "ROGER_SKIP env var"
-    assert row["skipped"]
-
-
-# --- config: provider normalization and misconfiguration surfacing -----------------
 
 
 def test_provider_aliases_normalize(tmp_path) -> None:

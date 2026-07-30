@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 import re
+import threading
 from typing import Optional
 
 import networkx as nx
@@ -145,28 +146,36 @@ def _cap_list(items: list[str], limit: int = MAX_LISTED_NEIGHBORS) -> str:
     return f"{shown} (+{hidden} more)" if hidden > 0 else shown
 
 
+# One request at a time to the local model: a 1B model can't parallelize,
+# and concurrent chat requests (app tabs, background work) only make Ollama
+# thrash. Azure is not serialized — the cloud can take it.
+_OLLAMA_LOCK = threading.Lock()
+
+
 def _call_model(prompt: str, config: Config) -> dict:
     """Dispatch one generation request to the configured provider."""
     if config.model.provider == "azure-anthropic":
         return azure.call_azure(prompt, config)
-    return local.call_local(
-        prompt,
-        model=config.model.local,
-        base_url=config.ollama.url,
-        num_ctx=config.ollama.num_ctx,
-    )
+    with _OLLAMA_LOCK:
+        return local.call_local(
+            prompt,
+            model=config.model.local,
+            base_url=config.ollama.url,
+            num_ctx=config.ollama.num_ctx,
+        )
 
 
 def chat_with_model(prompt: str, config: Config) -> str:
     """Free-text dispatch to the configured provider (roger ask)."""
     if config.model.provider == "azure-anthropic":
         return azure.chat_azure(prompt, config)
-    return local.chat_local(
-        prompt,
-        model=config.model.local,
-        base_url=config.ollama.url,
-        num_ctx=config.ollama.num_ctx,
-    )
+    with _OLLAMA_LOCK:
+        return local.chat_local(
+            prompt,
+            model=config.model.local,
+            base_url=config.ollama.url,
+            num_ctx=config.ollama.num_ctx,
+        )
 
 
 def ensure_backend(config: Config) -> None:

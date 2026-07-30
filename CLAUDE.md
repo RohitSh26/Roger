@@ -45,11 +45,19 @@ Tier 1 (local Ollama) handles medium and hard. There is no Tier 2.
 **Typer + Rich for CLI.** Use Typer for command definitions. Use Rich for all terminal
 output: panels, color, progress. Do not use Click directly or plain print() for UI.
 
-**SQLite only.** No PostgreSQL, no Redis, no other database. Two SQLite files:
-`.roger/cache.db` and `.roger/history.db`.
+**SQLite only.** No PostgreSQL, no Redis, no other database. SQLite files:
+`.roger/cache.db` (shared question cache) and `.roger/vectors.db`
+(machine-local semantic index, auto-gitignored). history.db was removed
+2026-07-29 — Roger stores no quiz history.
 
-**Static HTML dashboard.** `roger report` generates a `.roger/report.html` file and
-opens it in the browser. No Flask, no FastAPI, no live server.
+**The Roger app is the one GUI (amended 2026-07-29 by Rohit).** `roger app`
+runs a Streamlit app bound to 127.0.0.1 on a foreground process the user
+starts and stops (Ctrl-C) — it never daemonizes, never binds beyond
+localhost, and Streamlit's telemetry/first-run email prompt are suppressed
+per-process via env (never by writing ~/.streamlit). Streamlit ships as the
+optional `[app]` extra with a one-keypress on-demand install. The earlier
+static-HTML web views and `roger record` were removed with it. Quiz history
+was removed entirely (2026-07-29): no history.db, no session recording.
 
 ---
 
@@ -108,7 +116,8 @@ Use SHA-256. If the node or its immediate neighbors change, the hash changes and
 questions are generated. If the code is the same, the cache is hit.
 
 ### Guard skip mechanism
-`ROGER_SKIP=1` environment variable → log the skip to history.db with reason, exit 0.
+`ROGER_SKIP=1` environment variable → note the skip in .roger/activity.log
+(visible via `roger log`), exit 0.
 `git commit --no-verify` bypasses the hook at the git level — Roger can't control that,
 but the skip won't be logged either since the hook doesn't run.
 
@@ -188,12 +197,13 @@ Rohit to keep first-run setup fast):
 
 ## What NOT to Build
 
-- No REST API or web server of any kind
+- No REST API or web server — except the localhost-only, user-started
+  foreground `roger app` (see the amended GUI decision above)
 - No authentication or user accounts
 - No telemetry or usage reporting
 - No network calls except to local Ollama (localhost:11434)
 - No auto-update mechanism
-- No GUI
+- No GUI other than `roger app`
 - No VSCode extension (Phase 3+ if ever)
 - Do not vendor or bundle Ollama or graphify — they are external dependencies the user
   installs separately

@@ -163,7 +163,7 @@ def test_run_quiz_renders_snippet_and_escapes_markup(monkeypatch: pytest.MonkeyP
     assert "return [x] or None" in output     # option markup not eaten by Rich
 
 
-# --- web quiz ------------------------------------------------------------------
+# --- snippet language mapping ---------------------------------------------------
 
 
 def test_language_for_file() -> None:
@@ -171,57 +171,6 @@ def test_language_for_file() -> None:
     assert quiz_module.language_for_file("pkg/broker.go") == "go"
     assert quiz_module.language_for_file("src/Cart.tsx") == "typescript"
     assert quiz_module.language_for_file("Makefile") == "text"
-
-
-def test_render_quiz_html_and_record_roundtrip(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from roger import webquiz
-
-    monkeypatch.chdir(tmp_path)
-    questions = [
-        make_question(node_id="n1", text="Q1?", correct="B"),
-        make_question(node_id="n2", text="Q2 with </script> inside?", correct="A"),
-    ]
-    questions[0].snippet = "def f():\n    return [1] < [2]"
-    questions[0].language = "python"
-
-    page = webquiz.render_quiz_html(
-        questions, session_type="quiz", pass_threshold=1,
-        node_names={"n1": "f (src/f.py)"},
-    )
-    html = page.read_text(encoding="utf-8")
-    assert "quiz-data" in html and "language-python" not in html  # set client-side
-    assert "<\\/script>" in html          # snippet cannot break the embed tag
-    assert "f (src/f.py)" in html
-    assert webquiz.PENDING_PATH.is_file()
-
-    # Round-trip: answers B (right), B (wrong) → 1/2, threshold 1 → passed.
-    result = webquiz.record_answer_code("BB")
-    assert (result.score, result.total, result.passed) == (1, 2, True)
-    assert [a.is_correct for a in result.answers] == [True, False]
-    assert not webquiz.PENDING_PATH.is_file()  # consumed
-
-
-def test_record_rejects_bad_codes(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from roger import webquiz
-
-    monkeypatch.chdir(tmp_path)
-    with pytest.raises(ValueError):
-        webquiz.record_answer_code("AB")  # no pending session at all
-
-    webquiz.render_quiz_html(
-        [make_question(text="Q?")], session_type="quiz", pass_threshold=1
-    )
-    with pytest.raises(ValueError):
-        webquiz.record_answer_code("ABX")  # wrong length / invalid letter
-
-
-def test_quiz_template_file_matches_embedded_copy() -> None:
-    from pathlib import Path
-
-    from roger.webquiz import EMBEDDED_TEMPLATE
-
-    template = Path(__file__).resolve().parent.parent / "templates" / "quiz.html.jinja"
-    assert template.read_text(encoding="utf-8") == EMBEDDED_TEMPLATE
 
 
 # --- streaming ----------------------------------------------------------------
@@ -285,35 +234,60 @@ def test_markdown_snippets_render_as_markdown(monkeypatch: pytest.MonkeyPatch) -
     assert "## Levels" not in output    # headings rendered, not shown raw
 
 
-def test_web_template_renders_markdown_and_mermaid() -> None:
-    from roger.webquiz import EMBEDDED_TEMPLATE
-
-    assert "marked.min.js" in EMBEDDED_TEMPLATE
-    assert "mermaid" in EMBEDDED_TEMPLATE
-    assert "language-mermaid" in EMBEDDED_TEMPLATE  # fences become diagrams
+# --- the app layer (session blueprint + launcher policy) -------------------------
 
 
-def test_render_ask_html(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from roger import webquiz
+def test_quiz_blueprint_mixes_categories(monkeypatch) -> None:
+    from roger import session
+    from roger.config import Config
 
-    monkeypatch.chdir(tmp_path)
-    page = webquiz.render_ask_html(
-        "Why L0-L3 levels?",
-        "Because **tiers**:\n\n```python\nreturn levels[0]\n```\n\nAlso </script> safe.",
-        ["docs/contracts.md § Levels", "EvidencePackState (state.py)"],
+    doc_q = make_question(node_id="doc", text="Doc opener?")
+    code_qs = [make_question(node_id=f"c{i}", text=f"Code {i}?") for i in range(3)]
+    design_q = make_question(node_id="__design__", text="Design closer?")
+
+    monkeypatch.setattr(session, "doc_questions", lambda **kw: [doc_q])
+    monkeypatch.setattr(session, "iter_questions", lambda *a, **kw: iter(code_qs))
+    monkeypatch.setattr(session, "get_design_questions", lambda *a, **kw: [design_q])
+    monkeypatch.setattr(session, "DESIGN_NODE_ID", "__design__")
+
+    stream, names, total = session.quiz_blueprint(
+        __import__("networkx").DiGraph(), Config(), count=5,
+        node_picker=lambda graph, n: [f"c{i}" for i in range(n)],
     )
-    html = page.read_text(encoding="utf-8")
-    assert page.name == "ask.html"
-    assert "Why L0-L3 levels?" in html
-    assert "<\\/script>" in html                  # embed-safe
-    assert "docs/contracts.md § Levels" in html
-    assert "marked.min.js" in html and "mermaid" in html
+    questions = list(stream)
+    assert total == 5
+    assert questions[0].node_id == "doc"          # instant opener leads
+    assert questions[-1].node_id == "__design__"  # design closes
+    assert {q.node_id for q in questions} == {"doc", "c0", "c1", "c2", "__design__"}
+    assert names["__design__"] == "system design (module map)"
 
 
-def test_ask_template_file_matches_embedded_copy() -> None:
-    from pathlib import Path
+def test_streamlit_remedy_detects_environment(monkeypatch) -> None:
+    import sys
 
-    from roger.webquiz import ASK_EMBEDDED_TEMPLATE
+    from roger import cli
 
-    template = Path(__file__).resolve().parent.parent / "templates" / "ask.html.jinja"
-    assert template.read_text(encoding="utf-8") == ASK_EMBEDDED_TEMPLATE
+    monkeypatch.setattr(sys, "prefix", "/Users/x/.local/pipx/venvs/roger-cli")
+    assert cli._streamlit_missing_remedy() == "pipx inject roger-cli streamlit"
+
+
+def test_ensure_streamlit_errors_for_non_tty(monkeypatch) -> None:
+    import importlib.util
+
+    import typer
+
+    from roger import cli
+
+    real_find_spec = importlib.util.find_spec
+    monkeypatch.setattr(
+        cli.importlib.util, "find_spec",
+        lambda name, *a: None if name == "streamlit" else real_find_spec(name, *a),
+    )
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: False)
+    monkeypatch.setattr(
+        "typer.confirm", lambda *a, **k: pytest.fail("prompted a non-TTY caller")
+    )
+    with pytest.raises(typer.Exit) as excinfo:
+        cli._ensure_streamlit()
+    assert excinfo.value.exit_code == 1

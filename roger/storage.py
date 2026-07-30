@@ -1,4 +1,4 @@
-"""SQLite storage: .roger/cache.db (question cache) and .roger/history.db (quiz history).
+"""SQLite storage: .roger/cache.db — the shared question cache.
 
 Connections are opened and closed per-function — no persistent connection.
 All storage failures raise CacheError with a descriptive message.
@@ -15,7 +15,7 @@ from typing import Optional
 
 from roger.config import ROGER_DIR
 from roger.exceptions import CacheError
-from roger.models import Question, QuizResult
+from roger.models import Question
 
 CACHE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS question_cache (
@@ -28,36 +28,8 @@ CREATE TABLE IF NOT EXISTS question_cache (
 );
 """
 
-HISTORY_SCHEMA = """
-CREATE TABLE IF NOT EXISTS quiz_sessions (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_type    TEXT NOT NULL,
-    commit_hash     TEXT,
-    module_scope    TEXT,
-    score           INTEGER,
-    total           INTEGER,
-    passed          BOOLEAN,
-    skipped         BOOLEAN DEFAULT FALSE,
-    skip_reason     TEXT,
-    started_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    duration_secs   INTEGER
-);
-
-CREATE TABLE IF NOT EXISTS quiz_answers (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id      INTEGER REFERENCES quiz_sessions(id),
-    node_id         TEXT NOT NULL,
-    question        TEXT NOT NULL,
-    user_answer     TEXT,
-    correct_answer  TEXT,
-    is_correct      BOOLEAN,
-    difficulty      TEXT
-);
-"""
-
-
 def get_db_path(db_name: str) -> str:
-    """Returns .roger/cache.db or .roger/history.db"""
+    """Returns the path of a database file inside .roger/."""
     return str(ROGER_DIR / db_name)
 
 
@@ -99,9 +71,8 @@ def ensure_roger_gitignore() -> None:
 
 
 def init_dbs() -> None:
-    """Create both databases and their tables (used by `roger init`)."""
+    """Create the question cache database (used by `roger init`)."""
     _connect("cache.db", CACHE_SCHEMA).close()
-    _connect("history.db", HISTORY_SCHEMA).close()
     ensure_roger_gitignore()
 
 
@@ -145,77 +116,3 @@ def cache_questions(
             conn.commit()
     except sqlite3.Error as exc:
         raise CacheError(f"Cache write failed for node {node_id}: {exc}") from exc
-
-
-# --- history.db -------------------------------------------------------------
-
-def record_session(result: QuizResult) -> int:
-    """Record a completed quiz session. Returns the new session_id."""
-    try:
-        with closing(_connect("history.db", HISTORY_SCHEMA)) as conn:
-            cursor = conn.execute(
-                "INSERT INTO quiz_sessions "
-                "(session_type, commit_hash, module_scope, score, total, passed, "
-                " skipped, duration_secs) "
-                "VALUES (?, ?, ?, ?, ?, ?, FALSE, ?)",
-                (
-                    result.session_type,
-                    result.commit_hash,
-                    result.module_scope,
-                    result.score,
-                    result.total,
-                    result.passed,
-                    int(result.duration_secs),
-                ),
-            )
-            conn.commit()
-            session_id = cursor.lastrowid
-    except sqlite3.Error as exc:
-        raise CacheError(f"Could not record quiz session: {exc}") from exc
-
-    if session_id is None:  # pragma: no cover - sqlite always sets lastrowid here
-        raise CacheError("Could not record quiz session: no row id returned")
-    record_answers(session_id, result.answers)
-    return session_id
-
-
-def record_answers(session_id: int, answers: list) -> None:
-    """Record per-question answers for a session (list of QuizAnswer)."""
-    rows = [
-        (
-            session_id,
-            a.question.node_id,
-            a.question.question,
-            a.user_answer,
-            a.question.correct,
-            a.is_correct,
-            a.question.difficulty,
-        )
-        for a in answers
-    ]
-    try:
-        with closing(_connect("history.db", HISTORY_SCHEMA)) as conn:
-            conn.executemany(
-                "INSERT INTO quiz_answers "
-                "(session_id, node_id, question, user_answer, correct_answer, "
-                " is_correct, difficulty) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                rows,
-            )
-            conn.commit()
-    except sqlite3.Error as exc:
-        raise CacheError(f"Could not record answers for session {session_id}: {exc}") from exc
-
-
-def record_skip(reason: str, session_type: str = "guard") -> int:
-    """Record a skipped guard run (ROGER_SKIP). Returns the session_id."""
-    try:
-        with closing(_connect("history.db", HISTORY_SCHEMA)) as conn:
-            cursor = conn.execute(
-                "INSERT INTO quiz_sessions (session_type, skipped, skip_reason) "
-                "VALUES (?, TRUE, ?)",
-                (session_type, reason),
-            )
-            conn.commit()
-            return int(cursor.lastrowid or 0)
-    except sqlite3.Error as exc:
-        raise CacheError(f"Could not record skip: {exc}") from exc
