@@ -1359,6 +1359,29 @@ def test_call_azure_parses_anthropic_response(monkeypatch: pytest.MonkeyPatch) -
     assert sent["body"]["messages"][0]["content"] == "prompt text"
 
 
+def test_azure_payload_contract_is_pinned(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The full request contract, pinned so no field can silently vanish:
+    # max_tokens is REQUIRED by the Messages API (400 without it);
+    # temperature and system must stay explicit; both auth headers ride
+    # along because Foundry routes disagree on which one they want.
+    from roger.llm import azure
+
+    monkeypatch.setenv(azure.API_KEY_ENV, "key-123")
+    sent = {}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        sent.update(headers=headers, body=json)
+        return FakeResponse({"content": [{"type": "text", "text": "ok"}]})
+
+    monkeypatch.setattr(azure.requests, "post", fake_post)
+    azure.chat_azure("prompt", _azure_config())
+    assert sent["body"]["max_tokens"] == 1024
+    assert sent["body"]["temperature"] == 0.7
+    assert sent["body"]["system"] == azure.SYSTEM_PROMPT
+    assert sent["headers"]["api-key"] == "key-123"
+    assert sent["headers"]["anthropic-version"] == azure.ANTHROPIC_VERSION
+
+
 def test_call_azure_auth_and_deployment_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     from roger.exceptions import CloudBackendError
     from roger.llm import azure
