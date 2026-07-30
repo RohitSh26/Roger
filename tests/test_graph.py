@@ -389,3 +389,13 @@ def test_block_extraction_works_across_languages(
 def test_truncation_marker_is_markdown_safe() -> None:
     # A '#'-prefixed marker would render as a giant heading in markdown mode.
     assert not g.TRUNCATION_MARKER.startswith("#")
+
+
+def test_snippet_of_empty_file_returns_empty(tmp_path, monkeypatch) -> None:
+    # Field regression: a node pointing at an empty file (empty __init__.py)
+    # crashed with IndexError and killed every smarter-search index build.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    attrs = {"file": "pkg/__init__.py", "source_location": "L1", "display": "pkg"}
+    assert g.get_source_snippet(attrs) == ""

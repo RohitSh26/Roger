@@ -469,3 +469,22 @@ def test_rebuild_index_now_holds_the_lock(monkeypatch, tmp_path) -> None:
     assert cli._rebuild_index_now(Config()) is True
     assert calls == [True]          # refresh ran WITH the lock held
     assert not freshness.lock_held()  # and released it after
+
+
+def test_one_poisoned_node_never_kills_the_build(indexed, monkeypatch) -> None:
+    # Field regression: an IndexError building ONE card aborted the whole
+    # refresh, looping the machine between 'interrupted' and 'failed'.
+    graph, _ = indexed
+    real_card_text = embeddings.card_text
+
+    def poisoned(node):
+        if node["id"] == "payments.charge":
+            raise IndexError("list index out of range")
+        return real_card_text(node)
+
+    monkeypatch.setattr(embeddings, "card_text", poisoned)
+    monkeypatch.setattr(embeddings, "model_digest", lambda config, timeout=2: "digest-b")
+    stats = embeddings.refresh_index(graph, Config())
+    assert stats is not None
+    assert stats.skipped == 1
+    assert stats.embedded == 10  # everyone else still made it

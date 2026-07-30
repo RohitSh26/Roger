@@ -186,9 +186,17 @@ def refresh_index(
             }
             candidates = g.candidate_code_nodes(graph)
             pending: list[tuple[str, str, str]] = []
+            skipped = 0
             for node_id in candidates:
-                node = g.get_node(graph, node_id)
-                text = card_text(node)
+                # One node with an unreadable card (deleted/emptied file,
+                # odd encoding) must never kill the other 3,000 — skip it
+                # and say so in the stats.
+                try:
+                    node = g.get_node(graph, node_id)
+                    text = card_text(node)
+                except Exception:  # noqa: BLE001 - per-node isolation
+                    skipped += 1
+                    continue
                 content = card_hash(text, digest)
                 prev = stored.get(node_id)
                 # Re-embed on content change AND on a missing vector — a row
@@ -250,7 +258,8 @@ def refresh_index(
                 "SELECT COUNT(*), SUM(vec IS NOT NULL) FROM cards"
             ).fetchone()
             return IndexRefresh(
-                cards=total[0] or 0, embedded=embedded, with_vec=total[1] or 0
+                cards=total[0] or 0, embedded=embedded,
+                with_vec=total[1] or 0, skipped=skipped,
             )
     except sqlite3.Error:
         return None
@@ -290,6 +299,7 @@ class IndexRefresh:
     cards: int
     embedded: int
     with_vec: int
+    skipped: int = 0  # nodes whose card couldn't be built (file gone/odd)
 
 
 @dataclass

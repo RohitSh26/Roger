@@ -345,6 +345,12 @@ def get_source_snippet(
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return ""
+    if not lines:
+        # Empty file (an empty __init__.py, or a file emptied since the
+        # graph was built): there is no block to extract. Field bug: the
+        # index clamp below produced 0 and _block_end_by_indent indexed
+        # into the empty list, crashing every index build on the repo.
+        return ""
 
     match = _LOCATION_RE.search(str(attrs.get("source_location") or ""))
     start = int(match.group(1)) if match else 1

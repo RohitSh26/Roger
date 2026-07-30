@@ -228,6 +228,11 @@ def _refresh_semantic(config: Config, live: bool = True) -> Optional[embeddings.
         )
     else:
         say(f"✓ Smarter search: index already current ({stats.cards:,} functions).")
+    if stats.skipped:
+        say(
+            f"[dim]  (skipped {stats.skipped} function(s) whose files changed on "
+            "disk — 'roger update' refreshes the code map)[/dim]"
+        )
     return stats
 
 
