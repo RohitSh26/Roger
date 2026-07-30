@@ -357,3 +357,41 @@ def test_roger_gitignore_ships_with_init(in_tmp_repo) -> None:
     # Shareable files must stay shareable.
     assert "cache.db" not in ignore
     assert "config.toml" not in ignore
+
+
+# --- doctor advice for a degraded index (the "what do I do now?" answer) ---------
+
+
+def _advice(monkeypatch, *, lock=False, heals=False, outcome=None):
+    from roger import cli, freshness
+
+    monkeypatch.setattr(freshness, "lock_held", lambda: lock)
+    monkeypatch.setattr(embeddings, "self_heal_index", lambda c, p: heals)
+    monkeypatch.setattr(
+        freshness, "read_state", lambda: {"outcome": outcome} if outcome else {}
+    )
+    status = embeddings.IndexStatus("keyword-only", True, "an index build was interrupted")
+    return cli._semantic_doctor_advice(Config(), status)
+
+
+def test_doctor_advice_build_running(monkeypatch) -> None:
+    line, remedy = _advice(monkeypatch, lock=True)
+    assert "attaches, never restarts" in remedy
+
+
+def test_doctor_advice_rebuild_just_started(monkeypatch) -> None:
+    line, remedy = _advice(monkeypatch, heals=True)
+    assert "started in the background just now" in line
+    assert "roger update" in remedy
+
+
+def test_doctor_advice_names_a_failed_attempt(monkeypatch) -> None:
+    line, remedy = _advice(monkeypatch, outcome="failed")
+    assert "failed" in line
+    assert "update.log" in remedy
+
+
+def test_doctor_advice_cooldown_offers_foreground(monkeypatch) -> None:
+    line, remedy = _advice(monkeypatch)
+    assert "paused" in line
+    assert "roger update" in remedy

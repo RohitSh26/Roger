@@ -213,6 +213,35 @@ def _watch_background_update(config: Config) -> None:
         console.print(f"• Background update finished — smarter search: {final.reason}.")
 
 
+def _semantic_doctor_advice(
+    config: Config, status: embeddings.IndexStatus
+) -> tuple[str, str]:
+    """(finding, remedy) for a degraded index on a machine that has the
+    embed model. Never leaves the user guessing between four states:
+    running / just started / failed / paused — each names its next step,
+    and 'roger update' is always the one safe verb (it attaches to a
+    running build instead of restarting it)."""
+    line = f"smarter search: {status.reason}"
+    if freshness.lock_held():
+        return line, "watch it live: roger update   (safe — attaches, never restarts)"
+    if embeddings.self_heal_index(config, config.graph.path):
+        return (
+            line + " — rebuild started in the background just now",
+            "watch it live: roger update — or re-run roger doctor for a snapshot",
+        )
+    state = freshness.read_state()
+    if state.get("outcome") in ("failed", "shrink_refused"):
+        return (
+            line + " — the last background attempt failed",
+            "run: roger update   (retries in the foreground and shows the error; "
+            "details also in .roger/update.log)",
+        )
+    return (
+        line + " — retry is paused after a recent attempt",
+        "run: roger update   (rebuilds right now, with progress)",
+    )
+
+
 def _note_index_build() -> None:
     """One dim line when an index build is running during a quiz — the quiz
     works fine meanwhile, but invisible background work is banned."""
@@ -819,6 +848,7 @@ def doctor() -> None:
     remedies.
     """
     checks: list[tuple[str, str, str]] = []  # (status, finding, remedy)
+    semantic_degraded = False
 
     def check(ok: Optional[bool], good: str, bad: str, remedy: str = "") -> None:
         if ok is True:
@@ -901,27 +931,34 @@ def doctor() -> None:
 
         # Retrieval mode (semantic is optional; keyword-only is never wrong).
         # Doctor is the remedy surface: an unhealthy index isn't just
-        # reported — the rebuild starts right here.
+        # reported — the rebuild starts right here, and the message answers
+        # the three questions a degraded state raises: is it running, how
+        # do I watch it, and can I break it (no).
         status = embeddings.index_status(config)
         if status.mode == "semantic+keyword":
             checks.append(
                 ("ok", f"smarter search active ({status.with_vec}/{status.cards} indexed)", "")
             )
+        elif not status.model_present:
+            checks.append(("ok", f"search: keyword-only ({status.reason})", ""))
         else:
-            line = f"smarter search: {status.reason}"
-            if embeddings.self_heal_index(config, config.graph.path):
-                line += " — rebuilding in the background now"
-            elif not status.model_present:
-                line = f"search: keyword-only ({status.reason})"
-            checks.append(("ok", line, ""))
+            line, remedy = _semantic_doctor_advice(config, status)
+            checks.append(("warn", line, remedy))
+            semantic_degraded = True
 
     icons = {"ok": "[green]✓[/green]", "warn": "[yellow]⚠[/yellow]", "fail": "[red]✗[/red]"}
     failed = False
-    for status, finding, remedy in checks:
-        console.print(f"{icons[status]} {escape(finding)}")
+    for check_status, finding, remedy in checks:
+        console.print(f"{icons[check_status]} {escape(finding)}")
         if remedy:
             console.print(f"   → {escape(remedy)}")
-        failed = failed or status == "fail"
+        failed = failed or check_status == "fail"
+    if semantic_degraded:
+        console.print(
+            "[dim]While the index rebuilds, everything keeps working — quizzes, "
+            "ask, and agent packs just use keyword search. No Roger command can "
+            "interrupt the build.[/dim]"
+        )
     if failed:
         raise typer.Exit(code=1)
 
