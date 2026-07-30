@@ -164,31 +164,84 @@ def _maybe_offer_semantic(config: Config, reoffer: bool = False) -> None:
 
 
 def _refresh_semantic(config: Config, live: bool = True) -> Optional[embeddings.IndexRefresh]:
-    """Run the index refresh after a graph update; never fails the update.
+    """Refresh the smarter-search index IN THE FOREGROUND and narrate every
+    outcome — success, partial, model unreachable, or crash. Field lesson:
+    a swallowed exception here once looped a machine forever between
+    'interrupted' (doctor) and 'off' (update) with an empty update.log.
+    Failures must be printed, never converted into a misleading state.
 
-    live=True shows a moving count in the terminal; live=False prints
-    plain lines instead, which the background updater's stdout redirect
-    lands in .roger/update.log — the build is observable either way.
+    live=True renders a Rich progress line; live=False prints plain lines,
+    which the background updater's stdout redirect lands in .roger/update.log.
     """
+
+    def say(message: str) -> None:
+        if live:
+            console.print(message)
+        else:
+            from rich.markup import render as _render  # strip markup for logs
+
+            print(_render(message).plain, flush=True)
+
+    from roger.llm.local import is_ollama_running
+
+    if not is_ollama_running(config.ollama.url):
+        say("• Smarter search: Ollama isn't reachable right now — index left as-is.")
+        return None
+    if embeddings.model_digest(config, timeout=8) is None:
+        say("• Smarter search: off (keyword-only) — 'roger doctor' can enable it.")
+        return None
     try:
         graph = load_graph(config.graph.path)
-        if not live:
-            return embeddings.refresh_index(
+        if live:
+            with console.status("[dim]Smarter search: checking the index…[/dim]") as spinner:
+                stats = embeddings.refresh_index(
+                    graph, config,
+                    progress=lambda done, total: spinner.update(
+                        f"[dim]Smarter search: embedding {done:,} of {total:,} "
+                        "changed functions…[/dim]"
+                    ),
+                )
+        else:
+            stats = embeddings.refresh_index(
                 graph, config,
                 progress=lambda done, total: print(
                     f"smarter search: embedded {done}/{total}", flush=True
                 ),
             )
-        with console.status("[dim]Smarter search: checking the index…[/dim]") as spinner:
-            return embeddings.refresh_index(
-                graph, config,
-                progress=lambda done, total: spinner.update(
-                    f"[dim]Smarter search: embedding {done:,} of {total:,} "
-                    "changed functions…[/dim]"
-                ),
-            )
-    except Exception:  # noqa: BLE001 - semantic layer must never block updates
+    except Exception as exc:  # noqa: BLE001 - report it; never block the update
+        say(
+            f"⚠ Smarter search: index refresh failed — "
+            f"{type(exc).__name__}: {str(exc)[:200]}"
+        )
         return None
+    if stats is None:
+        say("• Smarter search: embedding model vanished mid-refresh — index left as-is.")
+    elif stats.with_vec < stats.cards:
+        say(
+            f"⚠ Smarter search: indexed {stats.with_vec:,} of {stats.cards:,} — "
+            "embedding stopped early (Ollama hiccup?). 'roger update' finishes it."
+        )
+    elif stats.embedded:
+        say(
+            f"✓ Smarter search: re-indexed {stats.embedded} changed function(s) "
+            f"({stats.with_vec:,} of {stats.cards:,} indexed)."
+        )
+    else:
+        say(f"✓ Smarter search: index already current ({stats.cards:,} functions).")
+    return stats
+
+
+def _rebuild_index_now(config: Config) -> bool:
+    """Doctor's TTY path: fix the index right here, on screen, with
+    progress — no 'watch it somewhere else'. Ctrl-C safe (builds resume).
+    Returns True when the index came out fully healthy."""
+    if not freshness.acquire_lock():
+        return False
+    try:
+        stats = _refresh_semantic(config, live=True)
+        return stats is not None and stats.with_vec >= stats.cards
+    finally:
+        freshness.release_lock()
 
 
 def _watch_background_update(config: Config) -> None:
@@ -719,8 +772,9 @@ def update(
     try:
         result = freshness.run_update(config.graph.path)
         # Embed step rides the same flow; never fails the graph update.
-        stats = _refresh_semantic(config, live=not background) if result.outcome == "ok" else None
         if background:
+            if result.outcome == "ok":
+                _refresh_semantic(config, live=False)
             return
         if result.outcome == "ok":
             delta = result.nodes_after - result.nodes_before
@@ -728,7 +782,7 @@ def update(
                 f"✓ Graph updated in {result.duration_secs:.0f}s — "
                 f"{result.nodes_after:,} nodes ({'+' if delta >= 0 else ''}{delta:,})."
             )
-            _print_semantic_result(stats)
+            _refresh_semantic(config, live=True)
         elif result.outcome == "shrink_refused":
             # The ONE verb finishes its own job: explain, confirm, rebuild —
             # never send the user to another tool's --force flag.
@@ -743,7 +797,7 @@ def update(
                         f"✓ Graph rebuilt in {result.duration_secs:.0f}s — "
                         f"{result.nodes_after:,} nodes."
                     )
-                    _print_semantic_result(_refresh_semantic(config))
+                    _refresh_semantic(config)
                 else:
                     _fail(f"✗ Roger: rebuild failed:\n{result.detail}")
         else:
@@ -849,6 +903,7 @@ def doctor() -> None:
     """
     checks: list[tuple[str, str, str]] = []  # (status, finding, remedy)
     semantic_degraded = False
+    semantic_fix_now = False
 
     def check(ok: Optional[bool], good: str, bad: str, remedy: str = "") -> None:
         if ok is True:
@@ -941,6 +996,13 @@ def doctor() -> None:
             )
         elif not status.model_present:
             checks.append(("ok", f"search: keyword-only ({status.reason})", ""))
+        elif (
+            sys.stdin.isatty() and sys.stdout.isatty() and not freshness.lock_held()
+        ):
+            # A human is looking at a broken index: fix it HERE, on screen,
+            # with progress — not "watch it somewhere else in the background".
+            checks.append(("warn", f"smarter search: {status.reason} — fixing it below", ""))
+            semantic_fix_now = True
         else:
             line, remedy = _semantic_doctor_advice(config, status)
             checks.append(("warn", line, remedy))
@@ -953,6 +1015,11 @@ def doctor() -> None:
         if remedy:
             console.print(f"   → {escape(remedy)}")
         failed = failed or check_status == "fail"
+    if semantic_fix_now:
+        console.print()
+        console.print("Rebuilding the smarter-search index now (Ctrl-C is safe — it resumes):")
+        if _rebuild_index_now(_load_config()):
+            console.print("[green]✓[/green] smarter search is healthy again.")
     if semantic_degraded:
         console.print(
             "[dim]While the index rebuilds, everything keeps working — quizzes, "

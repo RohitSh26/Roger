@@ -44,7 +44,7 @@ def fake_embed_factory():
 @pytest.fixture
 def indexed(graph, in_tmp_repo, monkeypatch: pytest.MonkeyPatch):
     """A built vector index over the synthetic graph, digest 'digest-a'."""
-    monkeypatch.setattr(embeddings, "model_digest", lambda config: "digest-a")
+    monkeypatch.setattr(embeddings, "model_digest", lambda config, timeout=2: "digest-a")
     monkeypatch.setattr(embeddings, "_embed", fake_embed_factory())
     stats = embeddings.refresh_index(graph, Config())
     return graph, stats
@@ -69,7 +69,7 @@ def test_refresh_index_is_incremental(indexed, monkeypatch) -> None:
 
 def test_refresh_index_reembeds_on_model_change(indexed, monkeypatch) -> None:
     graph, _ = indexed
-    monkeypatch.setattr(embeddings, "model_digest", lambda config: "digest-b")
+    monkeypatch.setattr(embeddings, "model_digest", lambda config, timeout=2: "digest-b")
     stats = embeddings.refresh_index(graph, Config())
     assert stats is not None and stats.embedded == stats.cards
 
@@ -83,7 +83,7 @@ def test_refresh_index_drops_deleted_nodes(indexed) -> None:
 
 
 def test_refresh_index_without_model_is_none(graph, in_tmp_repo, monkeypatch) -> None:
-    monkeypatch.setattr(embeddings, "model_digest", lambda config: None)
+    monkeypatch.setattr(embeddings, "model_digest", lambda config, timeout=2: None)
     assert embeddings.refresh_index(graph, Config()) is None
     assert not embeddings.VECTORS_PATH.exists()
 
@@ -91,7 +91,7 @@ def test_refresh_index_without_model_is_none(graph, in_tmp_repo, monkeypatch) ->
 def test_refresh_writes_cards_upfront_for_real_progress(graph, in_tmp_repo, monkeypatch) -> None:
     # Embedding fails entirely → zero vectors, but every card row (and its
     # text) exists, so done/total progress and keyword enrichment are real.
-    monkeypatch.setattr(embeddings, "model_digest", lambda config: "digest-a")
+    monkeypatch.setattr(embeddings, "model_digest", lambda config, timeout=2: "digest-a")
     monkeypatch.setattr(embeddings, "_embed", lambda texts, config, timeout: None)
     stats = embeddings.refresh_index(graph, Config())
     assert stats is not None
@@ -103,7 +103,7 @@ def test_refresh_writes_cards_upfront_for_real_progress(graph, in_tmp_repo, monk
 def test_refresh_resumes_vectorless_rows(graph, in_tmp_repo, monkeypatch) -> None:
     # Rows written upfront by an interrupted build must be re-embedded even
     # though their content hash already matches.
-    monkeypatch.setattr(embeddings, "model_digest", lambda config: "digest-a")
+    monkeypatch.setattr(embeddings, "model_digest", lambda config, timeout=2: "digest-a")
     monkeypatch.setattr(embeddings, "_embed", lambda texts, config, timeout: None)
     embeddings.refresh_index(graph, Config())
     monkeypatch.setattr(embeddings, "_embed", fake_embed_factory())
@@ -113,7 +113,7 @@ def test_refresh_resumes_vectorless_rows(graph, in_tmp_repo, monkeypatch) -> Non
 
 
 def test_progress_callback_reports_done_of_total(graph, in_tmp_repo, monkeypatch) -> None:
-    monkeypatch.setattr(embeddings, "model_digest", lambda config: "digest-a")
+    monkeypatch.setattr(embeddings, "model_digest", lambda config, timeout=2: "digest-a")
     monkeypatch.setattr(embeddings, "_embed", fake_embed_factory())
     ticks: list[tuple[int, int]] = []
     embeddings.refresh_index(
@@ -136,7 +136,7 @@ def test_semantic_rank_without_index_is_none(in_tmp_repo) -> None:
 
 
 def test_semantic_rank_digest_mismatch_hard_disables(indexed, monkeypatch) -> None:
-    monkeypatch.setattr(embeddings, "model_digest", lambda config: "digest-CHANGED")
+    monkeypatch.setattr(embeddings, "model_digest", lambda config, timeout=2: "digest-CHANGED")
     assert embeddings.semantic_rank("charge", Config()) is None
 
 
@@ -146,7 +146,7 @@ def test_semantic_rank_embed_failure_is_silent(indexed, monkeypatch) -> None:
 
 
 def test_semantic_rank_ollama_gone_is_silent(indexed, monkeypatch) -> None:
-    monkeypatch.setattr(embeddings, "model_digest", lambda config: None)
+    monkeypatch.setattr(embeddings, "model_digest", lambda config, timeout=2: None)
     assert embeddings.semantic_rank("charge", Config()) is None
 
 
@@ -228,7 +228,7 @@ def test_offer_respects_prior_refusal(monkeypatch) -> None:
     embeddings.record_declined()
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("sys.stdout.isatty", lambda: True)
-    monkeypatch.setattr(embeddings, "model_digest", lambda config: None)
+    monkeypatch.setattr(embeddings, "model_digest", lambda config, timeout=2: None)
     monkeypatch.setattr(
         "typer.confirm", lambda *a, **k: pytest.fail("prompted after refusal")
     )
@@ -243,7 +243,7 @@ def _heal_setup(monkeypatch, tmp_path, *, model=True):
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
-        embeddings, "model_digest", lambda config: "digest-a" if model else None
+        embeddings, "model_digest", lambda config, timeout=2: "digest-a" if model else None
     )
     spawned: list[dict] = []
     monkeypatch.setattr(
@@ -395,3 +395,77 @@ def test_doctor_advice_cooldown_offers_foreground(monkeypatch) -> None:
     line, remedy = _advice(monkeypatch)
     assert "paused" in line
     assert "roger update" in remedy
+
+
+# --- honest refresh narration (field bug: silent failure looked like 'off') ------
+
+
+def _narrate(monkeypatch, capsys, *, ollama=True, digest="d", crash=None, stats="ok"):
+    import roger.llm.local as local_mod
+
+    from roger import cli
+    from roger.embeddings import IndexRefresh
+
+    monkeypatch.setattr(local_mod, "is_ollama_running", lambda url=None: ollama)
+    monkeypatch.setattr(
+        embeddings, "model_digest", lambda config, timeout=2: digest
+    )
+    if crash is not None:
+        monkeypatch.setattr(
+            cli, "load_graph", lambda p: (_ for _ in ()).throw(crash)
+        )
+    else:
+        monkeypatch.setattr(cli, "load_graph", lambda p: object())
+        results = {
+            "ok": IndexRefresh(cards=10, embedded=2, with_vec=10),
+            "partial": IndexRefresh(cards=10, embedded=3, with_vec=7),
+        }
+        monkeypatch.setattr(
+            embeddings, "refresh_index", lambda *a, **k: results[stats]
+        )
+    out = cli._refresh_semantic(Config(), live=True)
+    return out, capsys.readouterr().out
+
+
+def test_refresh_narrates_ollama_down(monkeypatch, capsys) -> None:
+    result, out = _narrate(monkeypatch, capsys, ollama=False)
+    assert result is None and "Ollama isn't reachable" in out
+
+
+def test_refresh_narrates_model_absent(monkeypatch, capsys) -> None:
+    result, out = _narrate(monkeypatch, capsys, digest=None)
+    assert result is None and "off (keyword-only)" in out
+
+
+def test_refresh_narrates_crash_with_real_error(monkeypatch, capsys) -> None:
+    # THE field bug: a crash here used to print a misleading 'off' line and
+    # leave update.log empty. The actual exception must reach the screen.
+    result, out = _narrate(monkeypatch, capsys, crash=RuntimeError("vectors.db corrupt"))
+    assert result is None
+    assert "RuntimeError" in out and "vectors.db corrupt" in out
+
+
+def test_refresh_narrates_partial_coverage(monkeypatch, capsys) -> None:
+    result, out = _narrate(monkeypatch, capsys, stats="partial")
+    assert "7" in out and "10" in out and "stopped early" in out
+
+
+def test_refresh_narrates_success(monkeypatch, capsys) -> None:
+    result, out = _narrate(monkeypatch, capsys, stats="ok")
+    assert result is not None and "re-indexed 2 changed function(s)" in out
+
+
+def test_rebuild_index_now_holds_the_lock(monkeypatch, tmp_path) -> None:
+    from roger import cli, freshness
+    from roger.embeddings import IndexRefresh
+
+    monkeypatch.chdir(tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        cli, "_refresh_semantic",
+        lambda config, live=True: calls.append(freshness.lock_held())
+        or IndexRefresh(cards=5, embedded=5, with_vec=5),
+    )
+    assert cli._rebuild_index_now(Config()) is True
+    assert calls == [True]          # refresh ran WITH the lock held
+    assert not freshness.lock_held()  # and released it after

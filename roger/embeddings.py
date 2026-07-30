@@ -88,14 +88,17 @@ def clear_declined() -> None:
 # --- model capability sensing ---------------------------------------------------------
 
 
-def model_digest(config: Config) -> Optional[str]:
+def model_digest(config: Config, timeout: float = 2) -> Optional[str]:
     """Digest of the embed model in Ollama, or None if absent/unreachable.
 
     Presence IS enablement — no flag anywhere. Pinned by digest so an
-    upstream re-release under the same tag is detectable.
+    upstream re-release under the same tag is detectable. Query-time
+    callers keep the tight default; refresh/doctor paths pass a longer
+    timeout — a busy Ollama answering /api/tags in 3s must not be
+    mistaken for an absent model (field-observed flake).
     """
     try:
-        resp = requests.get(f"{config.ollama.url}/api/tags", timeout=2)
+        resp = requests.get(f"{config.ollama.url}/api/tags", timeout=timeout)
         resp.raise_for_status()
     except requests.RequestException:
         return None
@@ -170,7 +173,7 @@ def refresh_index(
     change invalidates every card (embedding spaces don't mix). progress,
     when given, is called with (embedded, pending total) after each batch.
     """
-    digest = model_digest(config)
+    digest = model_digest(config, timeout=8)
     if digest is None:
         return None
     try:
@@ -371,7 +374,7 @@ def index_status(config: Config) -> IndexStatus:
     """For roger doctor: mode, coverage, and a reason a human can act on."""
     from roger import freshness
 
-    digest = model_digest(config)
+    digest = model_digest(config, timeout=8)
     if not VECTORS_PATH.exists():
         return IndexStatus("keyword-only", digest is not None, "index not built yet")
     state = _read_index_state()
