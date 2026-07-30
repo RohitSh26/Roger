@@ -318,7 +318,7 @@ _LOOKUP_RECALL_RE = re.compile(
 )
 
 # Code identifiers a question refers to: `backticked` names and call-style
-# tokens like _run_billing_job().
+# tokens like some_helper().
 _CODE_REF_RE = re.compile(r"`([^`]+)`|\b([A-Za-z_][\w.]*)\s*\(\)")
 
 
@@ -337,7 +337,7 @@ def _is_out_of_scope(question_text: str, subject: Optional[str], snippet: str) -
 
     The model knows callers/callees by name only; a question about what one
     of them does internally is unanswerable from the shown snippet — the
-    exact 'asks about _run_billing_job() while showing FakeInvoiceClient' failure.
+    exact 'asks about a caller while showing only the subject class' failure.
     """
     if not snippet:
         return False

@@ -986,8 +986,8 @@ def test_build_mutant_question_unmutable_snippet_returns_none() -> None:
 
 FAKE_CLIENT_SNIPPET = """\
 class FakeInvoiceClient:
-    def seed(self, keyword, hits):
-        self.invoices_by_term[normalize_term(keyword)] = hits
+    def seed(self, term, invoices):
+        self.invoices_by_term[normalize_term(term)] = invoices
 
     async def search(self, query, *, page, top):
         ranked = sorted(best.values(), key=lambda hit: -hit.score)
@@ -995,8 +995,8 @@ class FakeInvoiceClient:
 
 
 def test_out_of_scope_rejects_question_about_unseen_caller() -> None:
-    # The exact field failure: snippet shows FakeInvoiceClient, question asks
-    # about _run_billing_job(), which appears nowhere in the shown code.
+    # The field failure shape: the snippet shows the subject class, the question
+    # asks about _run_billing_job(), which appears nowhere in the shown code.
     assert router._is_out_of_scope(
         "What is the immediate return value of _run_billing_job()?",
         subject="FakeInvoiceClient",
@@ -1006,12 +1006,12 @@ def test_out_of_scope_rejects_question_about_unseen_caller() -> None:
 
 def test_out_of_scope_allows_subject_and_visible_names() -> None:
     assert not router._is_out_of_scope(
-        "What does FakeInvoiceClient.search() return when no keyword matches?",
+        "What does FakeInvoiceClient.search() return when no term matches?",
         subject="FakeInvoiceClient",
         snippet=FAKE_CLIENT_SNIPPET,
     )
     assert not router._is_out_of_scope(
-        "Why does `seed` route keywords through `normalize_term`?",
+        "Why does `seed` route terms through `normalize_term`?",
         subject="FakeInvoiceClient",
         snippet=FAKE_CLIENT_SNIPPET,
     )
@@ -1036,7 +1036,7 @@ def test_parse_questions_drops_out_of_scope_items() -> None:
                 "correct": "B",
             },
             {
-                "question": "What does search() return when no keyword matches the query?",
+                "question": "What does search() return when no term matches the query?",
                 "options": {"A": "an empty list", "B": "None", "C": "all hits", "D": "an exception"},
                 "correct": "A",
             },

@@ -70,7 +70,7 @@ def _normalize_node_attrs(graph: nx.DiGraph) -> None:
         if attrs.get("community") is not None:
             attrs["community"] = str(attrs["community"])
         # Human-readable name for questions and prompts — developers should
-        # see build_charge_deps, never the underscore slug it hashes to.
+        # see the real function name, never the underscore slug it hashes to.
         attrs["display"] = str(attrs.get("label") or "").strip() or str(node_id)
 
 
@@ -321,7 +321,7 @@ def _block_end_by_braces(lines: list[str], start_idx: int, max_lines: int) -> in
 
 
 # Relations that carry interface meaning between code entities. Expansion
-# over "ALL relations" measured badly on the real graph: `contains` links
+# over "ALL relations" measured badly on real graphs: `contains` links
 # files to entities (not classes to methods), and rationale_for drags in
 # large numbers of doc stubs. Class→method is the `method` relation.
 INTERFACE_RELATIONS = {
@@ -351,8 +351,9 @@ def get_interface(attrs: dict, repo_root: Path | None = None) -> str:
     """The contract of a node: decorators + signature + first docstring
     line — never the body.
 
-    Field-measured requirements: a meaningful share of defs have a decorator directly
-    ABOVE the recorded line (peek upward), and many have multi-line signatures
+    Field-measured requirements: a meaningful share of defs have a
+    decorator directly ABOVE the recorded line (peek upward), and many
+    have multi-line signatures
     (read until a line ENDS with ':' — a ':' inside Dict[str, int] must
     not terminate). Brace languages stop at '{' or ';' (interface decls
     have no brace). Returns "" when no contract is extractable — callers

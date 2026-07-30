@@ -139,9 +139,9 @@ def score_relevant_nodes(graph, question: str) -> dict[str, float]:
 
     Terms are weighted by inverse document frequency over THIS repo's
     graph — no stopword lists, no hardcoded bouncers, works on any repo.
-    Field lesson: with flat weights, 'step' and 'results' scored like
-    'a rare term', so keyword-rich harness classes outranked the
-    search code, and migration files rode in on path matches alone.
+    Field lesson: with flat weights, generic words scored like rare,
+    meaningful ones, so keyword-rich harness classes outranked the actual
+    production code, and migration files rode in on path matches alone.
     Common-in-this-repo words are now worth little; rare ones dominate.
     """
     terms = _terms(question)
@@ -338,7 +338,7 @@ def context_pack(
 # Relational questions — "what calls X", "where is X used", "what does X
 # import" — have exact, enumerable answers in the graph. Sending them to an
 # LLM with 3 snippets and a capped caller list produced partial answers
-# that differed run to run (field report: asked 'what calls SomeClass'
+# that differed run to run (field report: asked 'what calls X' for one class
 # repeatedly, got a different subset each time). Answered from edges:
 # complete, deterministic, zero LLM.
 _RELATIONAL_PATTERNS: list[tuple[str, str]] = [
@@ -440,8 +440,8 @@ def _seam_nodes(
     """Boundary nodes 1 hop from the anchors over interface relations,
     ranked by how many distinct anchors touch them.
 
-    Measured on the real graph: uncapped 1-hop from 12 anchors reached far
-    nodes (far past any budget) because hub nodes have very high degree. Per-anchor,
+    Measured on a real graph: uncapped 1-hop from 12 anchors reached far
+    past any budget because hub nodes have very high degree. Per-anchor,
     prefer specific neighbors (low degree) over hubs; globally, a node
     touched by 3 anchors is signal while one touched by 1 is noise. Test
     files obey the same rule as retrieval: they never answer "what do I
