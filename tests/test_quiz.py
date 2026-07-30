@@ -311,8 +311,9 @@ def test_style_covers_the_design_states() -> None:
 
     for marker in (
         "stateok", "stateno", "stateans", "statemut",   # graded option rows
-        "st-key-primary", "st-key-nextbtn", "st-key-chip",
-        "turnuser", "turnroger", "roger-thinking", "roger-why",
+        "st-key-primary", "st-key-next", "st-key-link",
+        "turnuser", "turnroger", "rog-thinking", "rog-why",
+        "rog-badge", "rog-file", "stButtonGroup",       # v2: badge, code weld, nav
     ):
         assert marker in STYLE, marker
 
@@ -325,5 +326,5 @@ def test_app_env_pins_theme_and_privacy(monkeypatch) -> None:
     assert env["STREAMLIT_SERVER_HEADLESS"] == "true"
     assert env["STREAMLIT_BROWSER_GATHER_USAGE_STATS"] == "false"
     assert env["STREAMLIT_THEME_BASE"] == "light"
-    assert env["STREAMLIT_THEME_PRIMARY_COLOR"] == "#0071E3"
+    assert env["STREAMLIT_THEME_PRIMARY_COLOR"] == "#C1683F"
     assert "GRAPHIFY_FORCE" not in env  # footgun scrubbed, as everywhere

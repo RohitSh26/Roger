@@ -71,7 +71,7 @@ def _generate_session(count: int) -> None:
         path = where.split(" (")[-1].rstrip(")") if " (" in where else where
         if path:
             reading.markdown(
-                f'<div class="roger-reading">reading {path}</div>',
+                f'<div class="rog-scan" style="text-align:center">reading {path}</div>',
                 unsafe_allow_html=True,
             )
     st.session_state.quiz = {
@@ -115,23 +115,33 @@ def _indexed_note() -> str:
 
 def _quiz_start() -> None:
     _, _, symbols, files = _load_world()
-    st.markdown('<div class="roger-title">Quiz yourself on this repo</div>',
-                unsafe_allow_html=True)
+    st.markdown("# How well do you know this codebase?")
     st.markdown(
-        f'<div class="roger-sub">Questions are drawn from functions Roger has '
-        f'indexed — {symbols:,} symbols across {files:,} files.</div>',
+        f'<div class="rog-sub">Roger reads {files:,} files and {symbols:,} '
+        "functions here. Questions come straight from your own code — "
+        "nothing leaves this machine.</div>",
         unsafe_allow_html=True,
     )
     st.write("")
+    st.markdown('<div class="rog-caption">HOW MANY QUESTIONS</div>',
+                unsafe_allow_html=True)
     try:
-        count = st.segmented_control("Questions", options=[5, 10, 20], default=5)
+        count = st.segmented_control(
+            "How many questions", options=[5, 10, 20], default=5,
+            label_visibility="collapsed",
+        )
     except AttributeError:  # older streamlit
-        count = st.radio("Questions", [5, 10, 20], horizontal=True)
+        count = st.radio("How many questions", [5, 10, 20], horizontal=True,
+                         label_visibility="collapsed")
     st.write("")
     with st.container(key="primary"):
-        if st.button("Start quiz"):
+        if st.button("Start the quiz"):
             st.session_state.generating = int(count or 5)
             st.rerun()
+    st.markdown(
+        '<div class="rog-caption">Takes about four minutes.</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def _option_state(index: int, letter: str, question: Question, picked: str | None) -> str:
@@ -153,26 +163,27 @@ def _quiz_question(quiz: dict) -> None:
     who = quiz["names"].get(question.node_id, question.node_id)
     picked = quiz["picks"].get(index)
 
+    name = who.split(" (")[0]
+    file = " (".join(who.split(" (")[1:]).rstrip(")") if " (" in who else ""
     st.markdown(
-        f'<div class="roger-qcaption">{index + 1:02d} / {len(questions):02d}'
-        f' &nbsp;·&nbsp; {who.split(" (")[0]}'
-        f' <span class="path">{question.node_id if " (" not in who else who.split(" (")[1].rstrip(")")}</span></div>',
+        f'<div class="rog-caption"><b>{index + 1:02d} / {len(questions):02d}</b>'
+        f" · <code>{name}</code>" + (f" · <code>{file}</code>" if file else "") + "</div>",
         unsafe_allow_html=True,
     )
-    st.markdown(question.question)
+    st.markdown(f'<div class="rog-q">{question.question}</div>', unsafe_allow_html=True)
 
     if question.snippet:
         if question.language == "markdown":
             st.markdown(question.snippet)
         else:
-            file = " (".join(who.split(" (")[1:]).rstrip(")") if " (" in who else ""
             language = question.language or language_for_file(file)
-            st.markdown(
-                f'<div class="roger-codecaption"><span class="path">{file}</span>'
-                f"<span>{language.capitalize()}</span></div>",
-                unsafe_allow_html=True,
-            )
-            st.code(question.snippet, language=language or None, line_numbers=True)
+            with st.container(key=f"codepanel{index}"):
+                st.markdown(
+                    f'<div class="rog-file"><span>{file or name}</span>'
+                    f"<span>{language.capitalize()}</span></div>",
+                    unsafe_allow_html=True,
+                )
+                st.code(question.snippet, language=language or None, line_numbers=True)
 
     for letter in OPTION_KEYS:
         label = question.options.get(letter, "")
@@ -185,15 +196,19 @@ def _quiz_question(quiz: dict) -> None:
                 st.rerun()
 
     if picked is None:
+        st.markdown(
+            '<div class="rog-caption">Pick one. You\'ll see why straight away.</div>',
+            unsafe_allow_html=True,
+        )
         return
     if question.explanation:
         st.markdown(
-            f'<div class="roger-why">{question.explanation}</div>',
+            f'<div class="rog-why"><em>{question.explanation}</em></div>',
             unsafe_allow_html=True,
         )
     st.write("")
     with st.container(key="nextbtn"):
-        if st.button("Next", key=f"next{index}"):
+        if st.button("Next question", key=f"next{index}"):
             quiz["index"] = index + 1
             st.rerun()
 
@@ -203,11 +218,11 @@ def _quiz_end(quiz: dict) -> None:
     picks: dict[int, str] = quiz["picks"]
     score = sum(1 for i, pick in picks.items() if pick == questions[i].correct)
 
-    st.markdown('<div class="roger-title">Quiz complete</div>', unsafe_allow_html=True)
     st.markdown(
-        f'<div class="roger-score">{score} <small>of {len(questions)}</small></div>',
+        '<div class="rog-caption" style="margin-top:8px">THAT\'S THE LOT</div>',
         unsafe_allow_html=True,
     )
+    st.markdown(f"# {score} of {len(questions)}")
     st.progress(score / max(1, len(questions)))
 
     wrong_dirs: dict[str, int] = {}
@@ -225,34 +240,31 @@ def _quiz_end(quiz: dict) -> None:
             if worst in quiz["names"].get(q.node_id, "")
         )
         st.markdown(
-            f'<div class="roger-sub">Weakest area: <code>{worst}/</code> — '
-            f"{total_in - wrong_dirs[worst]} of {total_in}</div>",
+            f'<div class="rog-sub">Shakiest ground: <code>{worst}/</code> — '
+            f"{total_in - wrong_dirs[worst]} of {total_in}.</div>",
             unsafe_allow_html=True,
         )
 
     st.write("")
-    left, right = st.columns([1, 5])
-    with left:
-        with st.container(key="primary2"):
-            if st.button("New quiz"):
-                del st.session_state.quiz
-                st.rerun()
-    with right:
-        with st.expander("Review answers"):
-            for i, question in enumerate(questions):
-                ok = picks.get(i) == question.correct
-                mark = "✓" if ok else "✗"
-                st.markdown(
-                    f"**{mark} {i + 1}.** {question.question}\n\n"
-                    f"&nbsp;&nbsp;&nbsp;correct: **{question.correct})** "
-                    f"{question.options.get(question.correct, '')}"
-                )
+    with st.expander("Review the answers"):
+        for i, question in enumerate(questions):
+            ok = picks.get(i) == question.correct
+            mark = "✓" if ok else "✗"
+            st.markdown(
+                f"**{mark} {i + 1}.** {question.question}\n\n"
+                f"&nbsp;&nbsp;&nbsp;correct: **{question.correct})** "
+                f"{question.options.get(question.correct, '')}"
+            )
+    with st.container(key="linknew"):
+        if st.button("Start a new quiz"):
+            del st.session_state.quiz
+            st.rerun()
 
 
 def _quiz_generating() -> None:
     count = st.session_state.pop("generating")
-    st.markdown('<div class="roger-title">Preparing your quiz</div>',
-                unsafe_allow_html=True)
+    st.write("")
+    st.write("")
     try:
         _generate_session(count)
     except Exception as exc:  # backend down/model missing → say it plainly
@@ -292,27 +304,26 @@ def _suggestions(graph) -> list[str]:
     return ideas
 
 
-def _ask_tab() -> None:
+def _ask_view(prompt: str | None) -> None:
     config, graph, _, _ = _load_world()
     chat = st.session_state.setdefault("chat", [])
     repo = Path.cwd().name
 
     if not chat:
+        st.markdown(f"# Ask about {repo}")
         st.markdown(
-            f'<div class="roger-title">Ask about {repo}</div>', unsafe_allow_html=True
-        )
-        st.markdown(
-            f'<div class="roger-sub">Roger cites the files it read. '
-            f"Answers by {_backend_label()}. {_indexed_note()}</div>",
+            f'<div class="rog-sub">Roger reads the files it needs and shows '
+            f"you which ones. {_indexed_note()}. "
+            "Everything stays on this machine.</div>",
             unsafe_allow_html=True,
         )
         st.write("")
         ideas = _suggestions(graph)
-        columns = st.columns(len(ideas) or 1)
+        columns = st.columns([1, 1, 2])
         for i, idea in enumerate(ideas):
             with columns[i]:
-                with st.container(key=f"chip{i}"):
-                    if st.button(idea, key=f"chipbtn{i}"):
+                with st.container(key=f"link{i}"):
+                    if st.button(idea, key=f"linkbtn{i}"):
                         st.session_state.pending_question = idea
                         st.rerun()
 
@@ -325,7 +336,6 @@ def _ask_tab() -> None:
                     with st.expander(f"Sources · {len(turn['sources'])} files"):
                         st.markdown("\n".join(f"- {s}" for s in turn["sources"]))
 
-    prompt = st.chat_input("Ask Roger about this codebase…")
     pending = st.session_state.pop("pending_question", None)
     prompt = prompt or pending
     if not prompt:
@@ -339,7 +349,7 @@ def _ask_tab() -> None:
         with st.chat_message("assistant"):
             thinking = st.empty()
             thinking.markdown(
-                '<div class="roger-thinking">Reading the codebase…</div>',
+                '<div class="rog-thinking">Reading the codebase…</div>',
                 unsafe_allow_html=True,
             )
             try:
@@ -361,16 +371,33 @@ def main() -> None:
     st.set_page_config(page_title="Roger", page_icon="🎯", layout="centered")
     st.markdown(STYLE, unsafe_allow_html=True)
     repo = Path.cwd().name
+
+    provider, model = _backend_label().split(" · ", 1)
     st.markdown(
-        f'<div class="roger-brand"><span><b>roger</b> · {repo}</span>'
-        f'<span class="backend">{_backend_label()}</span></div>',
+        f'<div class="rog-head"><span class="rog-repo">roger · {repo}</span>'
+        f'<span class="rog-badge"><b>{provider}</b>{model}</span></div>',
         unsafe_allow_html=True,
     )
-    quiz_tab, ask_tab = st.tabs(["Quiz", "Ask"])
-    with quiz_tab:
+
+    # Segmented nav instead of st.tabs — this is what lets st.chat_input
+    # live at top level and truly pin to the bottom (design structure call).
+    try:
+        view = st.segmented_control(
+            "view", ["Quiz", "Ask"],
+            default=st.session_state.get("view", "Quiz"),
+            label_visibility="collapsed", key="viewpick",
+        )
+    except AttributeError:  # older streamlit
+        view = st.radio("view", ["Quiz", "Ask"], horizontal=True,
+                        label_visibility="collapsed")
+    view = view or st.session_state.get("view", "Quiz")
+    st.session_state.view = view
+
+    if view == "Quiz":
         _quiz_tab()
-    with ask_tab:
-        _ask_tab()
+        return
+    prompt = st.chat_input("Ask anything about this codebase…")
+    _ask_view(prompt)
 
 
 if __name__ == "__main__":
