@@ -345,6 +345,10 @@ div.stButton button:before{
   border-radius:11px; font:400 12.5px/1.4 var(--mono); color:var(--ink-2); }
 .rog-edge .rog-rel{ color:var(--faint); }
 
+/* ---------- explore: constellation map ---------- */
+.rog-map{ margin:4px 0 14px; border-radius:13px; overflow:hidden;
+  box-shadow:0 2px 10px rgba(33,26,18,.18); line-height:0; }
+
 /* ---------- explore: path stepper ---------- */
 [class*="st-key-hop"] [data-testid="stElementContainer"]{
   margin:0 auto; width:fit-content; }

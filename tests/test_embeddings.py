@@ -669,6 +669,22 @@ def test_path_data_mirrors_connection_path(graph) -> None:
     assert "not in the graph" in ask.path_data(graph, "notify", "Nonexistent")["error"]
 
 
+def test_path_map_svg_is_self_contained_and_deterministic(graph) -> None:
+    # The app's constellation map: pure inline SVG (the offline promise —
+    # graphify's own HTML exports pull D3 from a CDN, ours must not), and
+    # byte-identical across runs so Streamlit reruns don't jitter.
+    from roger import codemap
+
+    result = ask.path_data(graph, "notify", "hash_password")
+    svg = codemap.path_map_svg(graph, result["hops"], result["links"])
+    assert svg == codemap.path_map_svg(graph, result["hops"], result["links"])
+    assert svg.startswith("<svg") and svg.endswith("</svg>")
+    assert "http" not in svg and "<script" not in svg
+    for hop in result["hops"]:
+        assert hop["display"] in svg  # route nodes are labeled
+    assert svg.count("stroke-width=\"2.2\"") == len(result["links"])
+
+
 def test_path_uses_undirected_connectivity(graph) -> None:
     # notify ← process_payment → check_token ← login → hash_password:
     # NO directed path exists — a directed search would say "no path".

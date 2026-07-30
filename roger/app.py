@@ -478,6 +478,12 @@ def _explore_path(graph, start: str, end: str, known: set[str]) -> None:
         f'{len(links)} HOP{"S" if len(links) != 1 else ""}</div>',
         unsafe_allow_html=True,
     )
+    from roger.codemap import path_map_svg
+
+    st.markdown(
+        f'<div class="rog-map">{path_map_svg(graph, hops, links)}</div>',
+        unsafe_allow_html=True,
+    )
     for i, hop in enumerate(hops):
         if hop["display"] in known:
             with st.container(key=f"hop{i}"):
