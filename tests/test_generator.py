@@ -285,38 +285,6 @@ def test_generate_questions_regenerates_when_code_changes(
     assert calls["count"] == 2  # new hash → regenerated
 
 
-# --- select_questions ----------------------------------------------------------
-
-
-def test_select_questions_prefers_god_nodes() -> None:
-    pool = [
-        make_question(node_id="minor.node", text="minor q1?"),
-        make_question(node_id="minor.node", text="minor q2?"),
-        make_question(node_id="god.node", text="god q1?"),
-        make_question(node_id="god.node", text="god q2?"),
-    ]
-    selected = generator.select_questions(pool, count=2, god_node_ids=["god.node"])
-    assert len(selected) == 2
-    assert selected[0].node_id == "god.node"
-    # Variety: round-robin means the second pick comes from the other node.
-    assert selected[1].node_id == "minor.node"
-
-
-def test_select_questions_dedupes_and_respects_count() -> None:
-    pool = [
-        make_question(node_id="a", text="same text?"),
-        make_question(node_id="a", text="same text?"),
-        make_question(node_id="b", text="other text?"),
-    ]
-    selected = generator.select_questions(pool, count=5, god_node_ids=[])
-    texts = [q.question for q in selected]
-    assert len(texts) == len(set(texts)) == 2
-
-
-def test_select_questions_empty_pool() -> None:
-    assert generator.select_questions([], count=5, god_node_ids=[]) == []
-
-
 def test_call_local_surfaces_ollama_error_body(monkeypatch: pytest.MonkeyPatch) -> None:
     body = {"error": "request (53240 tokens) exceeds the available context size (8192 tokens)"}
     monkeypatch.setattr(
@@ -1240,26 +1208,6 @@ def test_iter_questions_varies_across_sessions(
     assert len(firsts) > 1  # cached batches no longer repeat one fixed question
 
 
-def test_order_cache_first_puts_warm_nodes_up_front(
-    graph_in_repo: nx.DiGraph, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from roger.storage import cache_questions
-
-    # Warm exactly one node's cache.
-    node = get_node(graph_in_repo, "db.connect")
-    sub = get_subgraph(graph_in_repo, "db.connect", hops=1)
-    key = generator.hash_node(
-        node, sub, snippet="", difficulty="medium", model="ollama:roger-local"
-    )
-    cache_questions(key, "db.connect", "medium",
-                    [make_question(node_id="db.connect")], "roger-local")
-    ordered = generator.order_cache_first(
-        ["payments.charge", "auth.login", "db.connect"], graph_in_repo, "medium"
-    )
-    assert ordered[0] == "db.connect"
-    assert set(ordered) == {"payments.charge", "auth.login", "db.connect"}
-
-
 # --- system-design questions ---------------------------------------------------
 
 
@@ -1641,12 +1589,16 @@ def test_context_pack_declares_provenance(graph: nx.DiGraph) -> None:
     assert "not AI-generated" in pack
 
 
-def test_agent_snippet_carries_trust_contract() -> None:
+def test_agent_snippet_rules_are_binding() -> None:
     from roger.cli import AGENT_SNIPPET
 
-    assert "TRUST CONTRACT" in AGENT_SNIPPET
-    assert "VERBATIM" in AGENT_SNIPPET
-    assert "MODIFY" in AGENT_SNIPPET    # verification still required for writes
+    # The four numbered rules agents must follow (Kimi field feedback:
+    # loose guidance gets overlooked; rules with STOP conditions don't).
+    for marker in ("RULE 1", "RULE 2", "RULE 3", "RULE 4"):
+        assert marker in AGENT_SNIPPET
+    assert "VERBATIM" in AGENT_SNIPPET   # provenance claim stays
+    assert "MODIFY" in AGENT_SNIPPET     # verification still required for writes
+    assert "re-query ONCE" in AGENT_SNIPPET  # reformulation before grep fallback
 
 
 def test_code_matcher_never_surfaces_markdown_or_skill_files(graph: nx.DiGraph) -> None:

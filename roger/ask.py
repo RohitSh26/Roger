@@ -16,7 +16,7 @@ from roger import graph as g
 from roger.config import Config
 from roger.docs import DocSection, _md_excerpt, discover_doc_files, split_sections
 from roger.freshness import is_source_file
-from roger.graph import _JUNK_NODE_RE, _looks_like_test_file
+from roger.graph import candidate_code_nodes, looks_like_test_file
 from roger.llm.router import chat_with_model, ensure_backend
 from roger.quiz import language_for_file
 
@@ -68,7 +68,6 @@ RULES:
 
 
 _SHORT_IDENTIFIER_RE = re.compile(r"[a-z]\d")  # L0, v2 — meaningful despite length
-_IDENTIFIER_NAME_RE = re.compile(r"[A-Za-z_][\w.]*(\(\))?$")
 
 
 def _terms(question: str) -> list[str]:
@@ -103,7 +102,7 @@ def retrieve_nodes(
         # work" — similarity must not smuggle them back in.
         semantic = [
             n for n in semantic
-            if not _looks_like_test_file(str(graph.nodes[n].get("file") or ""))
+            if not looks_like_test_file(str(graph.nodes[n].get("file") or ""))
         ]
 
     if not semantic:
@@ -143,37 +142,15 @@ def find_relevant_nodes(graph, question: str, top: int = MAX_CODE_MATCHES) -> li
     from roger import embeddings
 
     card_texts = embeddings.load_card_texts()  # docstring-aware when index exists
-    # "Is this code?" — answered by the graph, not by an extension list.
-    # Whatever language graphify parsed produces call edges; an extension
-    # whitelist would go silent on Elixir/Dart/Lua repos. The extension
-    # check remains only as a fallback for edge-less known-code files.
-    in_calls: set[str] = set()
-    for src, dst, data in graph.edges(data=True):
-        if g._is_call_edge(data):
-            in_calls.add(src)
-            in_calls.add(dst)
-
     scores: dict[str, int] = {}
-    for node_id, attrs in graph.nodes(data=True):
+    for node_id in candidate_code_nodes(graph):
+        attrs = graph.nodes[node_id]
         display = str(attrs.get("display") or node_id)
-        # Sentence-label nodes (doc-derived) make noisy code matches — the
-        # docs matcher covers that material properly.
-        if not _IDENTIFIER_NAME_RE.fullmatch(display):
-            continue
         file = str(attrs.get("file") or "")
-        # The CODE matcher serves code: either the graph says so (call
-        # edges) or the extension does. Markdown/skill/config files that
-        # graphify indexed fail both and never surface here.
-        if not file or file.lower().endswith((".md", ".markdown")):
-            continue
-        if node_id not in in_calls and not is_source_file(file):
-            continue
-        if _JUNK_NODE_RE.search(node_id) or _JUNK_NODE_RE.search(display):
-            continue
         # Production code answers "how does X work"; descriptive test names
         # are keyword-rich sentences that always out-score real code, so
         # tests are excluded unless the question is literally about tests.
-        if _looks_like_test_file(file) and not any(t.startswith("test") for t in terms):
+        if looks_like_test_file(file) and not any(t.startswith("test") for t in terms):
             continue
         names = f"{node_id} {display}".lower()
         prose = (

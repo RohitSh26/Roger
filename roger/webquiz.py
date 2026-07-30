@@ -17,9 +17,9 @@ from typing import Optional
 from jinja2 import Environment, FileSystemLoader
 
 from roger.grader import grade_answer, has_passed, score_answers
+from roger.config import ROGER_DIR
 from roger.models import Question, QuizAnswer, QuizResult
 
-ROGER_DIR = Path(".roger")
 QUIZ_HTML_PATH = ROGER_DIR / "quiz.html"
 ASK_HTML_PATH = ROGER_DIR / "ask.html"
 PENDING_PATH = ROGER_DIR / "quiz-pending.json"

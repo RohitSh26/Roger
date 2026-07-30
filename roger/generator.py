@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import random
+from dataclasses import dataclass
 from typing import Iterable, Iterator, Optional
 
 import networkx as nx
@@ -63,41 +64,6 @@ def hash_node(
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def select_questions(
-    all_questions: list[Question],
-    count: int,
-    god_node_ids: list[str],
-) -> list[Question]:
-    """Select `count` questions from the pool.
-
-    Weight toward questions about god nodes, and ensure variety by
-    round-robining across nodes rather than exhausting one node first.
-    """
-    by_node: dict[str, list[Question]] = {}
-    for question in all_questions:
-        by_node.setdefault(question.node_id, []).append(question)
-
-    god_set = set(god_node_ids)
-    # God nodes first (in god-list order), then the rest in pool order.
-    ordered_nodes = [n for n in god_node_ids if n in by_node]
-    ordered_nodes += [n for n in by_node if n not in god_set]
-
-    selected: list[Question] = []
-    seen_texts: set[str] = set()
-    while len(selected) < count:
-        progressed = False
-        for node_id in ordered_nodes:
-            if not by_node[node_id] or len(selected) >= count:
-                continue
-            question = by_node[node_id].pop(0)
-            if question.question in seen_texts:  # dedupe identical questions
-                continue
-            seen_texts.add(question.question)
-            selected.append(question)
-            progressed = True
-        if not progressed:
-            break
-    return selected
 
 
 def iter_questions(
@@ -112,9 +78,10 @@ def iter_questions(
 
     For each node: hash the node + 1-hop subgraph, hit the cache, and on a
     miss route to Tier 0/1 and cache the result. One question per node is
-    yielded first (variety), then leftovers fill the remainder. Because
-    generation happens on demand, a UI can show question 1 while question 2
-    generates behind the scenes. Node order is the caller's priority order
+    yielded first (variety), then leftovers fill the remainder. Snippets
+    and cache lookups happen up front (one fast pass in _prepare_nodes);
+    only the LLM calls are lazy — so a UI can show question 1 while
+    question 2 generates. Node order is the caller's priority order
     (god nodes first for whole-repo quizzes).
 
     A node the model can't handle is skipped; if NO node yields anything,
@@ -142,12 +109,12 @@ def iter_questions(
     for item in prepared:
         if yielded >= count:
             break
-        batch = item["batch"]
+        batch = item.batch
         if batch is None:
             try:
                 batch = get_questions_from_llm(
-                    item["node"], graph, difficulty, per_node,
-                    config=config, snippet=item["snippet"],
+                    item.node, graph, difficulty, per_node,
+                    config=config, snippet=item.snippet,
                 )
             except ValueError as exc:
                 # One node the model can't write valid questions for must not
@@ -155,7 +122,7 @@ def iter_questions(
                 last_error = exc
                 continue
             cache_questions(
-                item["key"], item["node_id"], difficulty, batch, _model_id(config)
+                item.key, item.node_id, difficulty, batch, _model_id(config)
             )
 
         fresh = [q for q in batch if q.question not in seen_texts]
@@ -181,6 +148,17 @@ def iter_questions(
         raise last_error
 
 
+@dataclass
+class _PreparedNode:
+    """One quiz node, fully staged: snippet read, cache key computed,
+    cached batch attached when the cache hit."""
+    node_id: str
+    node: dict
+    snippet: str
+    key: str
+    batch: Optional[list[Question]]
+
+
 def _prepare_nodes(
     node_ids: list[str], graph: nx.DiGraph, difficulty: str, config: Config
 ) -> list[dict]:
@@ -197,15 +175,12 @@ def _prepare_nodes(
             [q for q in cached if q.difficulty == difficulty] if cached is not None else []
         )
         prepared.append(
-            {
-                "node_id": node_id,
-                "node": node,
-                "snippet": snippet,
-                "key": key,
-                "batch": batch or None,
-            }
+            _PreparedNode(
+                node_id=node_id, node=node, snippet=snippet,
+                key=key, batch=batch or None,
+            )
         )
-    prepared.sort(key=lambda item: item["batch"] is None)  # stable: hits first
+    prepared.sort(key=lambda item: item.batch is None)  # stable: hits first
     return prepared
 
 
@@ -225,18 +200,6 @@ def interleave_questions(
         if remaining:
             yield remaining.pop(0)
     yield from remaining
-
-
-def order_cache_first(
-    node_ids: list[str],
-    graph: nx.DiGraph,
-    difficulty: str,
-    config: Optional[Config] = None,
-) -> list[str]:
-    """Order nodes so cache hits come first (iter_questions now does this
-    internally; kept as a public helper)."""
-    prepared = _prepare_nodes(node_ids, graph, difficulty, config or Config())
-    return [item["node_id"] for item in prepared]
 
 
 def generate_questions(

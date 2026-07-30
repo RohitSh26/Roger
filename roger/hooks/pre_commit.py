@@ -25,7 +25,7 @@ from roger import freshness
 from roger.docs import doc_questions
 from roger.freshness import is_source_file
 from roger.generator import interleave_questions, iter_questions
-from roger.graph import _normalize_path, get_changed_nodes, get_quizzable_nodes, load_graph
+from roger.graph import normalize_path, get_changed_nodes, get_quizzable_nodes, load_graph
 from roger.quiz import QuestionStream, node_display_names, run_quiz
 from roger.storage import record_session, record_skip
 
@@ -35,13 +35,13 @@ HOOK_PATH = Path(".git/hooks/pre-commit")
 def uncovered_source_files(staged_files: list[str], graph) -> list[str]:
     """Staged source files with no node in the graph — invisible to the quiz."""
     graph_files = {
-        _normalize_path(str(attrs.get("file") or ""))
+        normalize_path(str(attrs.get("file") or ""))
         for _, attrs in graph.nodes(data=True)
     }
     return [
         f
         for f in staged_files
-        if is_source_file(f) and _normalize_path(f) not in graph_files
+        if is_source_file(f) and normalize_path(f) not in graph_files
     ]
 HOOK_MARKER = "# installed by roger"
 HOOK_SCRIPT = f"""#!/bin/sh

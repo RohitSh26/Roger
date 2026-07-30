@@ -13,10 +13,9 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
 
+from roger.config import ROGER_DIR
 from roger.exceptions import CacheError
 from roger.models import Question, QuizResult
-
-ROGER_DIR = Path(".roger")
 
 CACHE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS question_cache (
@@ -220,66 +219,3 @@ def record_skip(reason: str, session_type: str = "guard") -> int:
             return int(cursor.lastrowid or 0)
     except sqlite3.Error as exc:
         raise CacheError(f"Could not record skip: {exc}") from exc
-
-
-def get_history(limit: int = 50) -> list[dict]:
-    """Most recent quiz sessions, newest first."""
-    try:
-        with closing(_connect("history.db", HISTORY_SCHEMA)) as conn:
-            rows = conn.execute(
-                "SELECT * FROM quiz_sessions ORDER BY started_at DESC, id DESC LIMIT ?",
-                (limit,),
-            ).fetchall()
-        return [dict(r) for r in rows]
-    except sqlite3.Error as exc:
-        raise CacheError(f"Could not read history: {exc}") from exc
-
-
-def get_weak_nodes(limit: int = 10) -> list[dict]:
-    """Nodes most often answered wrong: [{node_id, wrong_count, total_count}]."""
-    try:
-        with closing(_connect("history.db", HISTORY_SCHEMA)) as conn:
-            rows = conn.execute(
-                "SELECT node_id, "
-                "       SUM(CASE WHEN is_correct THEN 0 ELSE 1 END) AS wrong_count, "
-                "       COUNT(*) AS total_count "
-                "FROM quiz_answers GROUP BY node_id "
-                "HAVING wrong_count > 0 "
-                "ORDER BY wrong_count DESC, total_count DESC LIMIT ?",
-                (limit,),
-            ).fetchall()
-        return [dict(r) for r in rows]
-    except sqlite3.Error as exc:
-        raise CacheError(f"Could not read weak nodes: {exc}") from exc
-
-
-def get_skip_history() -> list[dict]:
-    """All skipped sessions, newest first."""
-    try:
-        with closing(_connect("history.db", HISTORY_SCHEMA)) as conn:
-            rows = conn.execute(
-                "SELECT id, session_type, skip_reason, started_at "
-                "FROM quiz_sessions WHERE skipped ORDER BY started_at DESC, id DESC"
-            ).fetchall()
-        return [dict(r) for r in rows]
-    except sqlite3.Error as exc:
-        raise CacheError(f"Could not read skip history: {exc}") from exc
-
-
-def get_score_trend(days: int = 30) -> list[dict]:
-    """Daily average score percentage for the dashboard chart."""
-    try:
-        with closing(_connect("history.db", HISTORY_SCHEMA)) as conn:
-            rows = conn.execute(
-                "SELECT DATE(started_at) AS day, "
-                "       AVG(CAST(score AS REAL) / total) * 100 AS avg_pct, "
-                "       COUNT(*) AS sessions "
-                "FROM quiz_sessions "
-                "WHERE NOT skipped AND total > 0 "
-                "  AND started_at >= DATETIME('now', ?) "
-                "GROUP BY day ORDER BY day",
-                (f"-{int(days)} days",),
-            ).fetchall()
-        return [dict(r) for r in rows]
-    except sqlite3.Error as exc:
-        raise CacheError(f"Could not read score trend: {exc}") from exc

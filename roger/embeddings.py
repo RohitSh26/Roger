@@ -26,11 +26,12 @@ from typing import Callable, Optional
 import requests
 
 from roger import graph as g
-from roger.config import Config
+from roger.config import ROGER_DIR, Config
+from dataclasses import dataclass
 
 EMBED_VERSION = 1
 EMBED_MODEL = "nomic-embed-text"
-VECTORS_PATH = Path(".roger/vectors.db")
+VECTORS_PATH = ROGER_DIR / "vectors.db"
 MACHINE_STATE_PATH = Path.home() / ".roger" / "state.json"
 QUERY_DEADLINE_SECS = 0.5  # cold model loads keep loading server-side; next call is warm
 _DOC_PREFIX = "search_document: "
@@ -157,39 +158,12 @@ def load_card_texts() -> dict[str, str]:
         return {}
 
 
-def _candidate_nodes(graph) -> list[str]:
-    """Same admission rule as the code-lane keyword matcher."""
-    from roger.ask import _IDENTIFIER_NAME_RE  # shared bouncer
-    from roger.freshness import is_source_file
-    from roger.graph import _JUNK_NODE_RE, _is_call_edge
-
-    in_calls: set[str] = set()
-    for src, dst, data in graph.edges(data=True):
-        if _is_call_edge(data):
-            in_calls.add(src)
-            in_calls.add(dst)
-    picked = []
-    for node_id, attrs in graph.nodes(data=True):
-        display = str(attrs.get("display") or node_id)
-        file = str(attrs.get("file") or "")
-        if not _IDENTIFIER_NAME_RE.fullmatch(display):
-            continue
-        if not file or file.lower().endswith((".md", ".markdown")):
-            continue
-        if node_id not in in_calls and not is_source_file(file):
-            continue
-        if _JUNK_NODE_RE.search(node_id) or _JUNK_NODE_RE.search(display):
-            continue
-        picked.append(node_id)
-    return picked
-
-
 def refresh_index(
     graph,
     config: Config,
     batch_size: int = 64,
     progress: Optional[Callable[[int, int], None]] = None,
-) -> Optional[dict]:
+) -> Optional[IndexRefresh]:
     """(Re)embed changed cards. Runs inside the freshness flow; never raises.
 
     Returns coverage stats or None when the model isn't available. A digest
@@ -207,7 +181,7 @@ def refresh_index(
                     "SELECT node_id, content_hash, vec IS NOT NULL FROM cards"
                 )
             }
-            candidates = _candidate_nodes(graph)
+            candidates = g.candidate_code_nodes(graph)
             pending: list[tuple[str, str, str]] = []
             for node_id in candidates:
                 node = g.get_node(graph, node_id)
@@ -272,7 +246,9 @@ def refresh_index(
             total = conn.execute(
                 "SELECT COUNT(*), SUM(vec IS NOT NULL) FROM cards"
             ).fetchone()
-            return {"cards": total[0] or 0, "embedded": embedded, "with_vec": total[1] or 0}
+            return IndexRefresh(
+                cards=total[0] or 0, embedded=embedded, with_vec=total[1] or 0
+            )
     except sqlite3.Error:
         return None
 
@@ -303,6 +279,46 @@ def _read_index_state() -> Optional[tuple[dict, int, int]]:
         return meta, total or 0, with_vec or 0
     except sqlite3.Error:
         return None
+
+
+@dataclass
+class IndexRefresh:
+    """What one refresh pass did (total cards / newly embedded / covered)."""
+    cards: int
+    embedded: int
+    with_vec: int
+
+
+@dataclass
+class IndexStatus:
+    """Retrieval mode plus a human-actionable reason when degraded."""
+    mode: str  # "semantic+keyword" | "keyword-only"
+    model_present: bool
+    reason: str = ""
+    cards: int = 0
+    with_vec: int = 0
+
+
+def self_heal_index(config: Config, graph_path: str) -> bool:
+    """Start a background rebuild of an unhealthy index: missing (fresh
+    clone, repo first touched by an agent), interrupted mid-build, stale
+    after a model change, or partially covered. Presence of the embed
+    model is the consent. Returns True if a build was started."""
+    if not needs_refresh(config):
+        return False
+    from roger import freshness
+
+    return freshness.maybe_refresh_in_background(graph_path, force=True)
+
+
+def offer_appropriate(config: Config, reoffer: bool = False) -> bool:
+    """Should a human flow offer to enable smarter search? (The TTY gate
+    and the actual prompt belong to the CLI; the policy lives here.)"""
+    if config.model.provider == "azure-anthropic":
+        return False
+    if embed_prompt_declined() and not reoffer:
+        return False
+    return model_digest(config) is None  # presence IS enablement
 
 
 def index_progress() -> Optional[tuple[int, int]]:
@@ -351,29 +367,21 @@ def needs_refresh(config: Config) -> bool:
     return True
 
 
-def index_status(config: Config) -> dict:
+def index_status(config: Config) -> IndexStatus:
     """For roger doctor: mode, coverage, and a reason a human can act on."""
     from roger import freshness
 
     digest = model_digest(config)
     if not VECTORS_PATH.exists():
-        return {
-            "mode": "keyword-only", "reason": "index not built yet",
-            "model_present": digest is not None,
-        }
+        return IndexStatus("keyword-only", digest is not None, "index not built yet")
     state = _read_index_state()
     if state is None:
-        return {
-            "mode": "keyword-only", "reason": "index unreadable",
-            "model_present": digest is not None,
-        }
+        return IndexStatus("keyword-only", digest is not None, "index unreadable")
     meta, total, with_vec = state
     if digest is None:
-        return {
-            "mode": "keyword-only",
-            "reason": "embedding model not available (is Ollama running?)",
-            "model_present": False,
-        }
+        return IndexStatus(
+            "keyword-only", False, "embedding model not available (is Ollama running?)"
+        )
     if not meta.get("digest"):
         # A finished build always has meta — its absence means the first
         # build is mid-flight (lock held) or died partway.
@@ -382,21 +390,18 @@ def index_status(config: Config) -> dict:
             if freshness.lock_held()
             else "an index build was interrupted"
         )
-        return {"mode": "keyword-only", "reason": reason, "model_present": True,
-                "cards": total, "with_vec": with_vec}
+        return IndexStatus("keyword-only", True, reason, cards=total, with_vec=with_vec)
     if meta.get("digest") != digest or meta.get("embed_version") != str(EMBED_VERSION):
-        return {"mode": "keyword-only", "reason": "the embedding model changed",
-                "model_present": True, "cards": total, "with_vec": with_vec}
+        return IndexStatus(
+            "keyword-only", True, "the embedding model changed",
+            cards=total, with_vec=with_vec,
+        )
     if with_vec < total:
-        return {"mode": "keyword-only",
-                "reason": f"index {with_vec:,}/{total:,} complete",
-                "model_present": True, "cards": total, "with_vec": with_vec}
-    return {
-        "mode": "semantic+keyword",
-        "cards": total,
-        "with_vec": with_vec,
-        "model_present": True,
-    }
+        return IndexStatus(
+            "keyword-only", True, f"index {with_vec:,}/{total:,} complete",
+            cards=total, with_vec=with_vec,
+        )
+    return IndexStatus("semantic+keyword", True, cards=total, with_vec=with_vec)
 
 
 def semantic_rank(question: str, config: Config, top: int = 30) -> Optional[list[str]]:

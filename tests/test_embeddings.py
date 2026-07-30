@@ -56,29 +56,29 @@ def indexed(graph, in_tmp_repo, monkeypatch: pytest.MonkeyPatch):
 def test_refresh_index_embeds_every_candidate(indexed) -> None:
     _, stats = indexed
     assert stats is not None
-    assert stats["cards"] == 11  # all synthetic nodes are identifier-shaped .py code
-    assert stats["with_vec"] == stats["cards"]
-    assert stats["embedded"] == stats["cards"]
+    assert stats.cards == 11  # all synthetic nodes are identifier-shaped .py code
+    assert stats.with_vec == stats.cards
+    assert stats.embedded == stats.cards
 
 
 def test_refresh_index_is_incremental(indexed, monkeypatch) -> None:
     graph, _ = indexed
     stats = embeddings.refresh_index(graph, Config())
-    assert stats is not None and stats["embedded"] == 0  # nothing changed → no work
+    assert stats is not None and stats.embedded == 0  # nothing changed → no work
 
 
 def test_refresh_index_reembeds_on_model_change(indexed, monkeypatch) -> None:
     graph, _ = indexed
     monkeypatch.setattr(embeddings, "model_digest", lambda config: "digest-b")
     stats = embeddings.refresh_index(graph, Config())
-    assert stats is not None and stats["embedded"] == stats["cards"]
+    assert stats is not None and stats.embedded == stats.cards
 
 
 def test_refresh_index_drops_deleted_nodes(indexed) -> None:
     graph, _ = indexed
     graph.remove_node("payments.refund")
     stats = embeddings.refresh_index(graph, Config())
-    assert stats is not None and stats["cards"] == 10
+    assert stats is not None and stats.cards == 10
     assert "payments.refund" not in embeddings.load_card_texts()
 
 
@@ -95,7 +95,7 @@ def test_refresh_writes_cards_upfront_for_real_progress(graph, in_tmp_repo, monk
     monkeypatch.setattr(embeddings, "_embed", lambda texts, config, timeout: None)
     stats = embeddings.refresh_index(graph, Config())
     assert stats is not None
-    assert (stats["cards"], stats["with_vec"], stats["embedded"]) == (11, 0, 0)
+    assert (stats.cards, stats.with_vec, stats.embedded) == (11, 0, 0)
     assert len(embeddings.load_card_texts()) == 11
     assert embeddings.index_progress() == (0, 11)
 
@@ -108,7 +108,7 @@ def test_refresh_resumes_vectorless_rows(graph, in_tmp_repo, monkeypatch) -> Non
     embeddings.refresh_index(graph, Config())
     monkeypatch.setattr(embeddings, "_embed", fake_embed_factory())
     stats = embeddings.refresh_index(graph, Config())
-    assert stats is not None and stats["embedded"] == 11
+    assert stats is not None and stats.embedded == 11
     assert embeddings.index_progress() == (11, 11)
 
 
@@ -220,14 +220,17 @@ def test_offer_never_prompts_outside_tty(monkeypatch) -> None:
 
 
 def test_offer_respects_prior_refusal(monkeypatch) -> None:
+    # Refusal suppresses the PROMPT forever — but not capability sensing:
+    # a user who later pulls the model themselves gets semantic search
+    # without being re-asked (presence is enablement).
     from roger import cli
 
     embeddings.record_declined()
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    monkeypatch.setattr(embeddings, "model_digest", lambda config: None)
     monkeypatch.setattr(
-        embeddings, "model_digest",
-        lambda config: pytest.fail("sensed capability after refusal"),
+        "typer.confirm", lambda *a, **k: pytest.fail("prompted after refusal")
     )
     cli._maybe_offer_semantic(Config())
 
@@ -269,14 +272,14 @@ def _write_index(meta: dict, cards: list[tuple[str, bool]]) -> None:
 
 def test_self_heal_builds_missing_index(monkeypatch, tmp_path) -> None:
     cli, spawned = _heal_setup(monkeypatch, tmp_path)
-    assert cli._ensure_semantic_index(Config()) is True
+    assert embeddings.self_heal_index(Config(), "graphify-out/graph.json") is True
     assert spawned == [{"force": True}]
 
 
 def test_self_heal_noop_when_index_healthy(monkeypatch, tmp_path) -> None:
     cli, spawned = _heal_setup(monkeypatch, tmp_path)
     _write_index({"digest": "digest-a"}, [("a", True), ("b", True)])
-    assert cli._ensure_semantic_index(Config()) is False
+    assert embeddings.self_heal_index(Config(), "graphify-out/graph.json") is False
     assert spawned == []
 
 
@@ -288,7 +291,7 @@ def test_self_heal_resumes_interrupted_build(monkeypatch, tmp_path) -> None:
     with __import__("contextlib").closing(embeddings._connect()) as conn:
         conn.execute("DELETE FROM meta")
         conn.commit()
-    assert cli._ensure_semantic_index(Config()) is True
+    assert embeddings.self_heal_index(Config(), "graphify-out/graph.json") is True
     assert spawned == [{"force": True}]
 
 
@@ -297,20 +300,20 @@ def test_self_heal_rebuilds_on_model_change_after_cooldown(monkeypatch, tmp_path
     _write_index(
         {"digest": "digest-OLD", "updated_at": "2000-01-01T00:00:00"}, [("a", True)]
     )
-    assert cli._ensure_semantic_index(Config()) is True
+    assert embeddings.self_heal_index(Config(), "graphify-out/graph.json") is True
 
 
 def test_self_heal_honors_cooldown_after_recent_attempt(monkeypatch, tmp_path) -> None:
     # Persistently failing embeds must not turn every call into a rebuild.
     cli, spawned = _heal_setup(monkeypatch, tmp_path)
     _write_index({"digest": "digest-a"}, [("a", True), ("b", False)])  # partial, fresh
-    assert cli._ensure_semantic_index(Config()) is False
+    assert embeddings.self_heal_index(Config(), "graphify-out/graph.json") is False
     assert spawned == []
 
 
 def test_self_heal_noop_without_model(monkeypatch, tmp_path) -> None:
     cli, spawned = _heal_setup(monkeypatch, tmp_path, model=False)
-    assert cli._ensure_semantic_index(Config()) is False
+    assert embeddings.self_heal_index(Config(), "graphify-out/graph.json") is False
     assert spawned == []
 
 
@@ -324,10 +327,10 @@ def test_status_names_interrupted_build_honestly(monkeypatch, tmp_path) -> None:
         conn.commit()
     monkeypatch.setattr(freshness, "lock_held", lambda: False)
     status = embeddings.index_status(Config())
-    assert status["reason"] == "an index build was interrupted"
+    assert status.reason == "an index build was interrupted"
     monkeypatch.setattr(freshness, "lock_held", lambda: True)
     status = embeddings.index_status(Config())
-    assert "index building now" in status["reason"]
+    assert "index building now" in status.reason
 
 
 def test_offer_self_heals_on_enabled_machine(monkeypatch, tmp_path) -> None:

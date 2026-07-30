@@ -73,20 +73,19 @@ def _make_result(score: int = 2, total: int = 3) -> QuizResult:
     )
 
 
-def test_record_session_and_history() -> None:
+def test_record_session_writes_session_row() -> None:
     session_id = storage.record_session(_make_result())
     assert session_id >= 1
-
-    history = storage.get_history()
-    assert len(history) == 1
-    row = history[0]
+    with sqlite3.connect(storage.get_db_path("history.db")) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM quiz_sessions WHERE id = ?", (session_id,)
+        ).fetchone()
     assert row["session_type"] == "quiz"
     assert row["score"] == 2
     assert row["total"] == 3
     assert row["passed"]
     assert not row["skipped"]
-    assert row["module_scope"] == "src/payments"
-    assert row["duration_secs"] == 10
 
 
 def test_record_session_records_answers() -> None:
@@ -104,36 +103,14 @@ def test_record_session_records_answers() -> None:
     ]
 
 
-def test_get_weak_nodes() -> None:
-    storage.record_session(_make_result())
-    weak = storage.get_weak_nodes()
-    assert weak == [{"node_id": "db.connect", "wrong_count": 1, "total_count": 1}]
-
-
-def test_record_skip_and_skip_history() -> None:
+def test_record_skip_writes_skip_row() -> None:
     storage.record_skip("ROGER_SKIP env var")
-    skips = storage.get_skip_history()
-    assert len(skips) == 1
-    assert skips[0]["session_type"] == "guard"
-    assert skips[0]["skip_reason"] == "ROGER_SKIP env var"
-
-    # Skips must not pollute regular history scoring fields.
-    history = storage.get_history()
-    assert history[0]["skipped"]
-
-
-def test_get_score_trend_includes_recent_session() -> None:
-    storage.record_session(_make_result())
-    trend = storage.get_score_trend(days=30)
-    assert len(trend) == 1
-    assert trend[0]["sessions"] == 1
-    assert trend[0]["avg_pct"] == pytest.approx(2 / 3 * 100)
-
-
-def test_history_limit() -> None:
-    for _ in range(5):
-        storage.record_session(_make_result())
-    assert len(storage.get_history(limit=3)) == 3
+    with sqlite3.connect(storage.get_db_path("history.db")) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM quiz_sessions").fetchone()
+    assert row["session_type"] == "guard"
+    assert row["skip_reason"] == "ROGER_SKIP env var"
+    assert row["skipped"]
 
 
 # --- config: provider normalization and misconfiguration surfacing -----------------

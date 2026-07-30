@@ -133,14 +133,10 @@ def _maybe_offer_semantic(config: Config, reoffer: bool = False) -> None:
     """
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         return
-    if config.model.provider == "azure-anthropic":
-        return  # no Ollama requirement on these repos; keyword-only silently
-    if embeddings.embed_prompt_declined() and not reoffer:
-        return
-    if embeddings.model_digest(config) is not None:
-        # Already enabled by presence — but a fresh repo on an enabled
-        # machine still needs its index built once.
-        _ensure_semantic_index(config)
+    if not embeddings.offer_appropriate(config, reoffer):
+        # Includes the enabled-machine case — where a fresh repo may still
+        # need its first index build.
+        embeddings.self_heal_index(config, config.graph.path)
         return
     from roger.llm.local import is_ollama_running
 
@@ -167,18 +163,7 @@ def _maybe_offer_semantic(config: Config, reoffer: bool = False) -> None:
         embeddings.record_declined()
 
 
-def _ensure_semantic_index(config: Config) -> bool:
-    """Self-heal an unhealthy vector index: missing (fresh clone, repo
-    first touched by an agent), interrupted mid-build (closed laptop,
-    stopped container), stale after a model change, or partially covered.
-    Presence of the embed model is the consent; the build runs in the
-    background. Returns True if a build was started."""
-    if not embeddings.needs_refresh(config):
-        return False
-    return freshness.maybe_refresh_in_background(config.graph.path, force=True)
-
-
-def _refresh_semantic(config: Config, live: bool = True) -> Optional[dict]:
+def _refresh_semantic(config: Config, live: bool = True) -> Optional[embeddings.IndexRefresh]:
     """Run the index refresh after a graph update; never fails the update.
 
     live=True shows a moving count in the terminal; live=False prints
@@ -219,15 +204,13 @@ def _watch_background_update(config: Config) -> None:
                 )
             time.sleep(1)
     final = embeddings.index_status(config)
-    if final["mode"] == "semantic+keyword":
+    if final.mode == "semantic+keyword":
         console.print(
             f"✓ Background update finished — smarter search index current "
-            f"({final['cards']:,} functions)."
+            f"({final.cards:,} functions)."
         )
     else:
-        console.print(
-            f"• Background update finished — smarter search: {final.get('reason', 'off')}."
-        )
+        console.print(f"• Background update finished — smarter search: {final.reason}.")
 
 
 def _note_index_build() -> None:
@@ -244,19 +227,19 @@ def _note_index_build() -> None:
         )
 
 
-def _print_semantic_result(stats: Optional[dict]) -> None:
+def _print_semantic_result(stats: Optional[embeddings.IndexRefresh]) -> None:
     """One honest line about what the update did to the smarter-search
     index — it always ran; it should never run invisibly."""
     if stats is None:
         console.print("[dim]• Smarter search: off (keyword-only) — 'roger doctor' to enable.[/dim]")
-    elif stats["embedded"]:
+    elif stats.embedded:
         console.print(
-            f"✓ Smarter search: re-indexed {stats['embedded']} changed function(s) "
-            f"({stats['with_vec']:,} of {stats['cards']:,} indexed)."
+            f"✓ Smarter search: re-indexed {stats.embedded} changed function(s) "
+            f"({stats.with_vec:,} of {stats.cards:,} indexed)."
         )
     else:
         console.print(
-            f"✓ Smarter search: index already current ({stats['cards']:,} functions)."
+            f"✓ Smarter search: index already current ({stats.cards:,} functions)."
         )
 
 
@@ -441,7 +424,7 @@ def _run_init(config: Config) -> None:
     # Machine already has the embed model (smarter search enabled) → this
     # new repo's index builds now, in the background, so the first
     # question — human's or agent's — can already match by meaning.
-    semantic_started = _ensure_semantic_index(config)
+    semantic_started = embeddings.self_heal_index(config, config.graph.path)
 
     # 9. Success summary.
     graph = load_graph(config.graph.path)
@@ -751,26 +734,30 @@ def use(
 AGENT_SNIPPET_START = "<!-- roger:start -->"
 AGENT_SNIPPET_END = "<!-- roger:end -->"
 AGENT_SNIPPET = f"""{AGENT_SNIPPET_START}
-## Roger — token-efficient code context (use this FIRST)
+## Roger — MANDATORY first step for codebase questions
 
-ALWAYS run this BEFORE any grep/find/file-reading when exploring this codebase:
+RULE 1 — Roger FIRST, always. For ANY question about this codebase ("how
+does X work", "where is Y handled", "what calls Z"), your FIRST action is:
 
     roger context "<your question>" --budget 2000
 
-It returns the relevant source (complete functions), the team's recorded
-decisions (ADRs, contracts), and call relationships in one budgeted, cited
-pack — typically far fewer tokens than raw file reading. If the pack misses,
-re-query ONCE with likely code terms (e.g. throttle → rate limit, backoff)
-before falling back to grep.
+Never grep, search, or open files as a first step. One Roger call returns
+the relevant source (complete functions), the team's recorded decisions
+(ADRs, contracts), and call relationships in one budgeted, cited pack —
+it typically replaces 5-7 tool calls and thousands of tokens.
 
-TRUST CONTRACT — the pack's code blocks are VERBATIM source, mechanically
-extracted (no AI generates them). Therefore:
-- For read-only questions: answer directly from the pack. Do NOT re-read
-  files whose relevant lines the pack already shows — that read returns
-  byte-identical text and only wastes tokens.
-- DO read the actual files when you are about to MODIFY code, when a claim
-  lacks a citation, when citations conflict, or when the pack says it was
-  truncated.
+RULE 2 — if the pack answers the question, STOP. Its code blocks are
+VERBATIM source, mechanically extracted seconds ago — no AI wrote or
+summarized them. Re-reading a cited file returns byte-identical text;
+doing so is pure token waste. Answer from the pack and cite its sources.
+
+RULE 3 — if the pack misses, re-query ONCE with likely code vocabulary
+(e.g. "throttle" → rate limit, backoff, sleep). Only after that second
+miss may you fall back to grep and file reading.
+
+RULE 4 — the ONLY reasons to open a file the pack already cites: you are
+about to MODIFY that code, a claim lacks a citation, citations conflict,
+or the pack says it was truncated.
 {AGENT_SNIPPET_END}"""
 
 agent_app = typer.Typer(help="Teach coding agents to use Roger (no MCP, no server).")
@@ -870,16 +857,16 @@ def doctor() -> None:
         # Doctor is the remedy surface: an unhealthy index isn't just
         # reported — the rebuild starts right here.
         status = embeddings.index_status(config)
-        if status["mode"] == "semantic+keyword":
+        if status.mode == "semantic+keyword":
             checks.append(
-                ("ok", f"smarter search active ({status['with_vec']}/{status['cards']} indexed)", "")
+                ("ok", f"smarter search active ({status.with_vec}/{status.cards} indexed)", "")
             )
         else:
-            line = f"smarter search: {status.get('reason', 'off')}"
-            if _ensure_semantic_index(config):
+            line = f"smarter search: {status.reason}"
+            if embeddings.self_heal_index(config, config.graph.path):
                 line += " — rebuilding in the background now"
-            elif not status.get("model_present"):
-                line = f"search: keyword-only ({status.get('reason', '')})"
+            elif not status.model_present:
+                line = f"search: keyword-only ({status.reason})"
             checks.append(("ok", line, ""))
 
     icons = {"ok": "[green]✓[/green]", "warn": "[yellow]⚠[/yellow]", "fail": "[red]✗[/red]"}
@@ -956,7 +943,7 @@ def context(
     # call still answers immediately (keyword-only if the index isn't
     # ready) — agents are never made to wait on an index build.
     if not freshness.maybe_refresh_in_background(config.graph.path):
-        _ensure_semantic_index(config)
+        embeddings.self_heal_index(config, config.graph.path)
     # Plain stdout — agents consume this; no panels, no colors.
     started = time.monotonic()
     pack = context_pack(question, graph, config, budget_tokens=budget)
@@ -985,31 +972,36 @@ def _install_snippet(path: Path) -> str:
     return "created"
 
 
+# One list drives install AND uninstall — adding an agent file target is a
+# one-line change. only_if_exists: never create that file, only amend it.
+AGENT_TARGETS: list[tuple[str, str, bool]] = [
+    ("AGENTS.md", "OpenCode, Codex, Copilot CLI, and Aider read it", False),
+    (".github/copilot-instructions.md", "GitHub Copilot in VS Code reads it", False),
+    ("CLAUDE.md", "Claude Code reads it", True),
+]
+
+
 @agent_app.command("install")
 def agent_install() -> None:
     """Write the Roger instructions into the files coding agents read."""
     if _anchor_repo_root() is None:
         _fail("✗ Roger: run this inside a git repository.")
-    outcome = _install_snippet(Path("AGENTS.md"))
-    console.print(f"✓ AGENTS.md {outcome} — OpenCode, Codex, Copilot CLI, and Aider read it.")
-    copilot_path = Path(".github/copilot-instructions.md")
-    copilot_path.parent.mkdir(parents=True, exist_ok=True)
-    outcome = _install_snippet(copilot_path)
-    console.print(
-        f"✓ .github/copilot-instructions.md {outcome} — GitHub Copilot in VS Code reads it."
-    )
-    if Path("CLAUDE.md").exists():
-        outcome = _install_snippet(Path("CLAUDE.md"))
-        console.print(f"✓ CLAUDE.md {outcome} — Claude Code reads it.")
+    for name, audience, only_if_exists in AGENT_TARGETS:
+        path = Path(name)
+        if only_if_exists and not path.exists():
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        outcome = _install_snippet(path)
+        console.print(f"✓ {name} {outcome} — {audience}.")
     console.print("  Agents will now run 'roger context' before grepping and reading files.")
 
     # The human is setting up agents right now — the one moment to make
     # sure their context packs get semantic matching from the first call.
     config = _load_config()
     status = embeddings.index_status(config)
-    if status["mode"] == "semantic+keyword":
+    if status.mode == "semantic+keyword":
         console.print("✓ Smarter search is on — packs match by meaning as well as keywords.")
-    elif _ensure_semantic_index(config):
+    elif embeddings.self_heal_index(config, config.graph.path):
         console.print(
             "✓ Smarter search index building in the background — "
             "packs match by meaning once it finishes (a minute or two)."
@@ -1023,7 +1015,7 @@ def agent_uninstall() -> None:
     """Remove the Roger instructions from AGENTS.md and CLAUDE.md."""
     _anchor_repo_root()
     removed = 0
-    for name in ("AGENTS.md", "CLAUDE.md", ".github/copilot-instructions.md"):
+    for name, _, _ in AGENT_TARGETS:
         path = Path(name)
         if not path.exists():
             continue

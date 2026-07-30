@@ -68,32 +68,11 @@ def test_get_god_nodes_orders_by_degree(graph: nx.DiGraph) -> None:
     assert len(top) == 3
 
 
-def test_get_community_nodes(graph: nx.DiGraph) -> None:
-    payments = g.get_community_nodes(graph, "payments")
-    assert len(payments) == 5
-    assert all(n.startswith("payments.") for n in payments)
-    assert g.get_community_nodes(graph, "ghosts") == []
-
-
 def test_get_changed_nodes_maps_files(graph: nx.DiGraph) -> None:
     changed = g.get_changed_nodes(
         graph, ["src/payments/charge.py", "./src/db/conn.py", "README.md"]
     )
     assert changed == ["db.connect", "payments.charge"]
-
-
-def test_get_nodes_by_path_prefix_and_exact(graph: nx.DiGraph) -> None:
-    assert g.get_nodes_by_path(graph, "src/payments") == [
-        "payments.charge",
-        "payments.notify",
-        "payments.process_payment",
-        "payments.refund",
-        "payments.validate_card",
-    ]
-    assert g.get_nodes_by_path(graph, "src/db/conn.py") == ["db.connect"]
-    assert g.get_nodes_by_path(graph, "src/nonexistent") == []
-    # Prefix must respect path boundaries: src/pay should not match src/payments.
-    assert g.get_nodes_by_path(graph, "src/pay") == []
 
 
 def test_serialize_subgraph_is_deterministic(graph: nx.DiGraph) -> None:
@@ -103,36 +82,6 @@ def test_serialize_subgraph_is_deterministic(graph: nx.DiGraph) -> None:
     assert first == second
     assert "payments.process_payment" in first
     assert "->" in first
-
-
-def test_god_nodes_from_report(report_file: Path) -> None:
-    assert g.get_god_node_ids_from_report(str(report_file)) == [
-        "payments.process_payment",
-        "auth.check_token",
-    ]
-
-
-def test_god_nodes_from_missing_report(tmp_path: Path) -> None:
-    assert g.get_god_node_ids_from_report(str(tmp_path / "GRAPH_REPORT.md")) == []
-
-
-def test_surprise_edges_from_report(report_file: Path) -> None:
-    assert g.get_surprise_edges(str(report_file)) == [
-        ("payments.process_payment", "auth.check_token")
-    ]
-
-
-def test_surprise_edges_missing_report(tmp_path: Path) -> None:
-    assert g.get_surprise_edges(str(tmp_path / "GRAPH_REPORT.md")) == []
-
-
-def test_query_graph_for_ask_matches_descriptions(graph: nx.DiGraph) -> None:
-    context = g.query_graph_for_ask(graph, "What charges the card via the gateway?")
-    assert "payments.charge" in context
-
-
-def test_query_graph_for_ask_no_match(graph: nx.DiGraph) -> None:
-    assert g.query_graph_for_ask(graph, "zzz qqq xyzzy") == ""
 
 
 # --- real graphify schema (undirected serialization, source_file/label, relations) ---
@@ -190,9 +139,6 @@ def test_real_schema_only_call_edges_count(real_schema_graph) -> None:
 
 def test_real_schema_file_queries_use_normalized_paths(real_schema_graph) -> None:
     assert g.get_changed_nodes(real_schema_graph, ["app/helper.py"]) == ["app_helper"]
-    assert g.get_nodes_by_path(real_schema_graph, "app") == [
-        "app_config", "app_helper", "app_main",
-    ]
 
 
 def test_serialize_subgraph_respects_max_chars(graph: nx.DiGraph) -> None:
@@ -381,7 +327,7 @@ def test_snippet_char_budget_cuts_on_line_boundary(tmp_path: Path) -> None:
     ],
 )
 def test_test_file_detection_across_languages(file: str, is_test: bool) -> None:
-    assert g._looks_like_test_file(file) is is_test
+    assert g.looks_like_test_file(file) is is_test
 
 
 GO_SOURCE = """\

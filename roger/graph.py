@@ -80,7 +80,7 @@ def _normalize_node_attrs(graph: nx.DiGraph) -> None:
 CALL_RELATIONS = {"calls", "indirect_call"}
 
 
-def _is_call_edge(edge_attrs: dict) -> bool:
+def is_call_edge(edge_attrs: dict) -> bool:
     relation = edge_attrs.get("relation")
     return relation is None or relation in CALL_RELATIONS
 
@@ -93,10 +93,10 @@ def get_node(graph: nx.DiGraph, node_id: str) -> dict:
     attrs["id"] = node_id
     attrs.setdefault("display", node_id)
     attrs["callers"] = sorted(
-        u for u, _, d in graph.in_edges(node_id, data=True) if _is_call_edge(d)
+        u for u, _, d in graph.in_edges(node_id, data=True) if is_call_edge(d)
     )
     attrs["callees"] = sorted(
-        v for _, v, d in graph.out_edges(node_id, data=True) if _is_call_edge(d)
+        v for _, v, d in graph.out_edges(node_id, data=True) if is_call_edge(d)
     )
     return attrs
 
@@ -114,10 +114,10 @@ def get_god_nodes(graph: nx.DiGraph, top_n: int = 10) -> list[str]:
 
 # Graphify emits bookkeeping nodes developers should never be quizzed on:
 # doc-derived rationale_N stubs and shell __entry markers.
-_JUNK_NODE_RE = re.compile(r"(?:rationale_\d+|__?entry)$")
+JUNK_NODE_RE = re.compile(r"(?:rationale_\d+|__?entry)$")
 
 
-def _looks_like_test_file(file: str) -> bool:
+def looks_like_test_file(file: str) -> bool:
     """Language-agnostic test-file conventions: Python, Go, JS/TS, Java, Ruby…"""
     name = file.rsplit("/", 1)[-1].lower()
     stem = name.rsplit(".", 1)[0]
@@ -131,6 +131,49 @@ def _looks_like_test_file(file: str) -> bool:
     )
 
 
+# Shared with retrieval: "is this node's display a code identifier?"
+IDENTIFIER_NAME_RE = re.compile(r"[A-Za-z_][\w.]*(\(\))?$")
+
+
+def call_edge_nodes(graph: nx.DiGraph) -> set[str]:
+    """Every node participating in at least one real call edge."""
+    in_calls: set[str] = set()
+    for src, dst, data in graph.edges(data=True):
+        if is_call_edge(data):
+            in_calls.add(src)
+            in_calls.add(dst)
+    return in_calls
+
+
+def candidate_code_nodes(graph: nx.DiGraph) -> list[str]:
+    """The single admission rule for code retrieval — keyword channel and
+    embedding index MUST range over the same universe, or rank fusion
+    silently compares different worlds. "Is this code?" is answered by the
+    graph (call edges) with the extension list only as a fallback for
+    edge-less known-code files; markdown and junk nodes never pass.
+
+    Test files ARE included here — whether tests belong in a result is a
+    per-question decision (callers filter), not an indexing decision.
+    """
+    from roger.freshness import is_source_file
+
+    in_calls = call_edge_nodes(graph)
+    picked = []
+    for node_id, attrs in graph.nodes(data=True):
+        display = str(attrs.get("display") or node_id)
+        if not IDENTIFIER_NAME_RE.fullmatch(display):
+            continue
+        file = str(attrs.get("file") or "")
+        if not file or file.lower().endswith((".md", ".markdown")):
+            continue
+        if node_id not in in_calls and not is_source_file(file):
+            continue
+        if JUNK_NODE_RE.search(str(node_id)) or JUNK_NODE_RE.search(display):
+            continue
+        picked.append(node_id)
+    return picked
+
+
 def get_quizzable_nodes(graph: nx.DiGraph, exclude_tests: bool = True) -> list[str]:
     """Node IDs worth quizzing a developer on.
 
@@ -141,7 +184,7 @@ def get_quizzable_nodes(graph: nx.DiGraph, exclude_tests: bool = True) -> list[s
     """
     in_calls: set[str] = set()
     for src, dst, data in graph.edges(data=True):
-        if _is_call_edge(data):
+        if is_call_edge(data):
             in_calls.add(src)
             in_calls.add(dst)
 
@@ -150,52 +193,32 @@ def get_quizzable_nodes(graph: nx.DiGraph, exclude_tests: bool = True) -> list[s
         if node_id not in in_calls:
             continue
         label = str(attrs.get("label") or "")
-        if _JUNK_NODE_RE.search(str(node_id)) or _JUNK_NODE_RE.search(label):
+        if JUNK_NODE_RE.search(str(node_id)) or JUNK_NODE_RE.search(label):
             continue
         picked.append(node_id)
 
     if exclude_tests:
         non_test = [
             n for n in picked
-            if not _looks_like_test_file(str(graph.nodes[n].get("file", "")))
+            if not looks_like_test_file(str(graph.nodes[n].get("file", "")))
         ]
         if non_test:
             return sorted(non_test)
     return sorted(picked)
 
 
-def get_community_nodes(graph: nx.DiGraph, community: str) -> list[str]:
-    """Return all node IDs in a named Leiden community."""
-    return sorted(
-        node_id
-        for node_id, attrs in graph.nodes(data=True)
-        if attrs.get("community") == community
-    )
-
-
-def _normalize_path(path: str) -> str:
+def normalize_path(path: str) -> str:
     return path[2:] if path.startswith("./") else path
 
 
 def get_changed_nodes(graph: nx.DiGraph, changed_files: list[str]) -> list[str]:
     """Map a list of changed file paths (from git diff) to graph node IDs."""
-    changed = {_normalize_path(p) for p in changed_files}
+    changed = {normalize_path(p) for p in changed_files}
     return sorted(
         node_id
         for node_id, attrs in graph.nodes(data=True)
-        if _normalize_path(str(attrs.get("file", ""))) in changed
+        if normalize_path(str(attrs.get("file", ""))) in changed
     )
-
-
-def get_nodes_by_path(graph: nx.DiGraph, path: str) -> list[str]:
-    """Return all node IDs whose file attribute matches path or starts with path."""
-    prefix = _normalize_path(path).rstrip("/")
-    matches = []
-    for node_id, attrs in graph.nodes(data=True):
-        file = _normalize_path(str(attrs.get("file", "")))
-        if file == prefix or file.startswith(prefix + "/"):
-            matches.append(node_id)
-    return sorted(matches)
 
 
 def serialize_subgraph(
@@ -402,7 +425,7 @@ def module_map(
     for src, dst, data in graph.edges(data=True):
         if len(edge_lines) >= max_edges:
             break
-        if not _is_call_edge(data):
+        if not is_call_edge(data):
             continue
         src_mod = _module_of(str(graph.nodes[src].get("file") or ""))
         dst_mod = _module_of(str(graph.nodes[dst].get("file") or ""))
@@ -418,64 +441,3 @@ def module_map(
     if not edge_lines:
         return ""
     return "\n".join(lines + ["", "CROSS-MODULE DEPENDENCIES:"] + edge_lines)
-
-
-def get_god_node_ids_from_report(report_path: str = REPORT_PATH) -> list[str]:
-    """Parse GRAPH_REPORT.md to extract named god nodes — used for quiz weighting."""
-    report = Path(report_path)
-    if not report.exists():
-        return []
-    god_nodes: list[str] = []
-    in_section = False
-    for line in report.read_text(encoding="utf-8").splitlines():
-        if line.lstrip().startswith("#"):
-            in_section = "god node" in line.lower()
-            continue
-        if in_section:
-            god_nodes.extend(re.findall(r"`([^`]+)`", line))
-    return god_nodes
-
-
-def get_surprise_edges(report_path: str = REPORT_PATH) -> list[tuple]:
-    """Parse GRAPH_REPORT.md to extract surprise edges — direct quiz material."""
-    report = Path(report_path)
-    if not report.exists():
-        return []
-    edges: list[tuple] = []
-    in_section = False
-    for line in report.read_text(encoding="utf-8").splitlines():
-        if line.lstrip().startswith("#"):
-            in_section = "surprise" in line.lower()
-            continue
-        if in_section:
-            match = re.search(r"`?([\w./:]+)`?\s*(?:->|→)\s*`?([\w./:]+)`?", line)
-            if match:
-                edges.append((match.group(1), match.group(2)))
-    return edges
-
-
-def query_graph_for_ask(graph: nx.DiGraph, question: str) -> str:
-    """Natural language graph query for roger ask.
-
-    Keyword-match question terms against node descriptions (and IDs).
-    Return serialized subgraph of top matching nodes.
-    """
-    terms = {t.lower() for t in re.findall(r"\w+", question) if len(t) > 2}
-    if not terms:
-        return ""
-
-    scores: dict[str, int] = {}
-    for node_id, attrs in graph.nodes(data=True):
-        haystack = f"{node_id} {attrs.get('description', '')}".lower()
-        score = sum(1 for term in terms if term in haystack)
-        if score:
-            scores[node_id] = score
-
-    top = sorted(scores, key=lambda n: (-scores[n], n))[:5]
-    if not top:
-        return ""
-
-    combined: set[str] = set()
-    for node_id in top:
-        combined.update(get_subgraph(graph, node_id, hops=1).nodes)
-    return serialize_subgraph(graph.subgraph(combined))

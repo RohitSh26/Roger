@@ -14,7 +14,9 @@ import sys
 import time
 from pathlib import Path
 
-ACTIVITY_PATH = Path(".roger/activity.log")
+from roger.config import ROGER_DIR
+
+ACTIVITY_PATH = ROGER_DIR / "activity.log"
 _ROTATE_BYTES = 2_000_000  # keep the current file bounded; one prior kept
 
 

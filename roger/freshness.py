@@ -25,7 +25,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-ROGER_DIR = Path(".roger")
+from roger.config import ROGER_DIR
+
 LOCK_PATH = ROGER_DIR / "update.lock"
 STATE_PATH = ROGER_DIR / "update-state.json"
 UPDATE_LOG_PATH = ROGER_DIR / "update.log"
