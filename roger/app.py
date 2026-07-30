@@ -21,6 +21,7 @@ No CDN assets, ever: system fonts, local Streamlit bundles, nothing else.
 
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 
@@ -289,6 +290,26 @@ def _quiz_tab() -> None:
 # ---------------------------------------------------------------------------- ask
 
 
+_FENCE_RE = re.compile(r"```(\w*)\n(.*?)```", re.DOTALL)
+
+
+def _render_answer(text: str) -> None:
+    """Markdown, but code fences become real st.code panels — line numbers,
+    the dark surface, the design's token palette. st.markdown's own fence
+    rendering has no line numbers."""
+    pos = 0
+    for match in _FENCE_RE.finditer(text):
+        before = text[pos:match.start()].strip()
+        if before:
+            st.markdown(before)
+        st.code(match.group(2).rstrip(), language=match.group(1) or None,
+                line_numbers=True)
+        pos = match.end()
+    rest = text[pos:].strip()
+    if rest:
+        st.markdown(rest)
+
+
 def _suggestions(graph) -> list[str]:
     from roger.graph import looks_like_test_file
 
@@ -332,7 +353,10 @@ def _ask_view(prompt: str | None) -> None:
         wrapper = "turnuser" if turn["role"] == "user" else "turnroger"
         with st.container(key=f"{wrapper}{i}"):
             with st.chat_message(turn["role"]):
-                st.markdown(turn["text"])
+                if turn["role"] == "assistant":
+                    _render_answer(turn["text"])
+                else:
+                    st.markdown(turn["text"])
                 if turn.get("sources"):
                     with st.expander(f"Sources · {len(turn['sources'])} files"):
                         st.markdown("\n".join(f"- {s}" for s in turn["sources"]))
@@ -358,7 +382,7 @@ def _ask_view(prompt: str | None) -> None:
             except Exception as exc:
                 answer, sources = f"✗ {exc}", []
             thinking.empty()
-            st.markdown(answer)
+            _render_answer(answer)
             if sources:
                 with st.expander(f"Sources · {len(sources)} files"):
                     st.markdown("\n".join(f"- {s}" for s in sources))

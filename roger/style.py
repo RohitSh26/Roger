@@ -168,34 +168,34 @@ div.stButton > button:before{
   margin:0 0 6px;
 }
 [data-testid="stCode"] pre, [data-testid="stCodeBlock"] pre{
-  background:var(--code-bg); border:none; padding:16px 22px 16px 0; margin:0;
+  background:var(--code-bg); border:none; padding:16px 22px; margin:0;
 }
 [data-testid="stCode"] code, [data-testid="stCodeBlock"] code{
   font-family:var(--mono); font-size:13.5px; line-height:1.75;
   letter-spacing:-.002em; color:var(--code-fg);
 }
-[data-testid="stCode"] .linenos, [data-testid="stCode"] span[data-line-number],
-[data-testid="stCodeBlock"] .linenos{
-  display:inline-block; width:52px; padding-right:16px; margin-right:20px;
-  text-align:right; color:#5E574C; background:var(--code-gutter);
-  user-select:none;
-}
 [data-testid="stCode"] button, [data-testid="stCodeBlock"] button{
   opacity:0; color:#9A9287; transition:opacity .16s ease; }
 [data-testid="stCode"]:hover button, [data-testid="stCodeBlock"]:hover button{
   opacity:1; }
-/* pygments tokens on the warm-ink surface */
-[data-testid="stCode"] .k, [data-testid="stCode"] .kn, [data-testid="stCode"] .kd,
-[data-testid="stCode"] .ow{ color:#D98A73; }
-[data-testid="stCode"] .s, [data-testid="stCode"] .s1, [data-testid="stCode"] .s2,
-[data-testid="stCode"] .sd{ color:#B4C99A; }
-[data-testid="stCode"] .c, [data-testid="stCode"] .c1,
-[data-testid="stCode"] .cm{ color:#7E776B; font-style:normal; }
-[data-testid="stCode"] .m, [data-testid="stCode"] .mi,
-[data-testid="stCode"] .mf{ color:#C9A96A; }
-[data-testid="stCode"] .nf, [data-testid="stCode"] .fm{ color:#8FB8D0; }
-[data-testid="stCode"] .nc, [data-testid="stCode"] .nb,
-[data-testid="stCode"] .nd{ color:#C7A8D8; }
+/* prism tokens (react-syntax-highlighter) on the warm-ink surface */
+[data-testid="stCode"] .token.keyword{ color:#D98A73; }
+[data-testid="stCode"] .token.string, [data-testid="stCode"] .token.char,
+[data-testid="stCode"] .token.attr-value{ color:#B4C99A; }
+[data-testid="stCode"] .token.comment, [data-testid="stCode"] .token.prolog{
+  color:#7E776B; font-style:normal; }
+[data-testid="stCode"] .token.number, [data-testid="stCode"] .token.boolean{
+  color:#C9A96A; }
+[data-testid="stCode"] .token.function{ color:#8FB8D0; }
+[data-testid="stCode"] .token.class-name, [data-testid="stCode"] .token.builtin,
+[data-testid="stCode"] .token.decorator{ color:#C7A8D8; }
+[data-testid="stCode"] .token.operator, [data-testid="stCode"] .token.punctuation{
+  color:#A89F91; }
+/* line-number gutter (spans carry inline styles → !important) */
+[data-testid="stCode"] .react-syntax-highlighter-line-number{
+  color:#5E574C !important; min-width:2.4em !important;
+  padding-right:1.1em !important; margin-right:1.1em;
+  border-right:1px solid #2E2A24; }
 /* file caption sitting above a block */
 .rog-file{ display:flex; align-items:center; justify-content:space-between;
   padding:10px 14px 10px 18px; border-radius:13px 13px 0 0;
@@ -273,12 +273,18 @@ div.stButton > button:before{
   margin:0; }
 
 /* ---------- progress ---------- */
-[data-testid="stProgress"] > div > div{ height:5px; border-radius:3px;
-  background:#E6DFD2; }
-[data-testid="stProgress"] > div > div > div{ background:var(--clay);
-  border-radius:3px; transition:width .2s ease; }
-[data-testid="stProgress"] p{ font-family:var(--serif); font-size:27px;
-  color:var(--ink); letter-spacing:-.012em; text-align:center; margin:0 0 14px; }
+/* 1.60 DOM: label wrapper first, then a react-aria bar whose fill is a
+   full-width child shifted by translateX — the track must clip it. The
+   old > div > div selectors hit the LABEL wrapper (squashing it under
+   the bar) and painted an unclipped fill, so the bar always read full. */
+[data-testid="stProgress"] [data-testid="stMarkdownContainer"] p{
+  font-family:var(--serif); font-size:24px; line-height:1.35; color:var(--ink);
+  letter-spacing:-.012em; text-align:center; margin:0 0 16px; }
+[data-testid="stProgress"] [data-testid="stProgressBarTrack"]{
+  height:5px; border-radius:3px; background:#E6DFD2; overflow:hidden; }
+[data-testid="stProgress"] [data-testid="stProgressBarTrack"] > div{
+  height:100%; background:var(--clay); border-radius:3px;
+  transition:transform .25s ease; }
 
 /* ---------- chat input (pinned: lives outside the nav switch) ---------- */
 [data-testid="stBottomBlockContainer"]{ background:var(--card);
