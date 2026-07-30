@@ -541,3 +541,35 @@ def test_interface_pack_no_match_says_so(graph, monkeypatch) -> None:
     monkeypatch.setattr(embeddings, "load_card_texts", lambda: {})
     pack = ask.interface_pack("zzz qqq xyzzy", graph, Config())
     assert "No matching code found" in pack
+
+
+def test_rare_terms_outrank_common_ones() -> None:
+    # IDF weighting: 'frobnicate' (matches 1 node) must dominate 'widget'
+    # (matches many). Flat scoring tied them and sorted alphabetically,
+    # which is how keyword-rich harness classes outranked production code.
+    import networkx as nx
+
+    graph = nx.DiGraph()
+    for i in range(5):
+        graph.add_node(f"common{i}", display=f"widget_{i}", file=f"src/w{i}.py")
+    graph.add_node("special", display="frobnicate", file="src/f.py")
+    hits = ask.find_relevant_nodes(graph, "widget frobnicate", top=3)
+    assert hits[0] == "special"
+
+
+def test_interface_tail_anchors_need_semantic_endorsement(graph, monkeypatch) -> None:
+    anchors = ["payments.process_payment", "payments.validate_card",
+               "payments.charge", "payments.refund", "payments.notify"]
+    monkeypatch.setattr(ask, "retrieve_nodes", lambda *a, **k: list(anchors))
+    monkeypatch.setattr(
+        ask, "score_relevant_nodes",
+        lambda *a, **k: {n: 8.0 for n in anchors} | {"payments.process_payment": 10.0},
+    )
+    # Only refund is meaning-endorsed; notify is word-coincidence.
+    monkeypatch.setattr(embeddings, "semantic_rank", lambda *a, **k: ["payments.refund"])
+    monkeypatch.setattr(embeddings, "load_card_texts", lambda: {})
+    pack = ask.interface_pack("some question", graph, Config())
+    assert "## refund" in pack or "refund (" in pack       # tail + endorsed → card
+    card_section = pack.split("More contracts")[0]
+    assert "notify" not in card_section                    # tail, unendorsed → gated
+    assert "notify" in pack                                # …but visible in the index

@@ -134,15 +134,26 @@ def retrieve_nodes(
     return ordered[:top]
 
 
-def find_relevant_nodes(graph, question: str, top: int = MAX_CODE_MATCHES) -> list[str]:
-    """Keyword channel: node ids best matching the question by words."""
+def score_relevant_nodes(graph, question: str) -> dict[str, float]:
+    """Keyword channel with rarity weighting: node id → relevance score.
+
+    Terms are weighted by inverse document frequency over THIS repo's
+    graph — no stopword lists, no hardcoded bouncers, works on any repo.
+    Field lesson: with flat weights, 'step' and 'results' scored like
+    'a rare term', so keyword-rich harness classes outranked the
+    search code, and migration files rode in on path matches alone.
+    Common-in-this-repo words are now worth little; rare ones dominate.
+    """
     terms = _terms(question)
     if not terms:
-        return []
+        return {}
     from roger import embeddings
 
     card_texts = embeddings.load_card_texts()  # docstring-aware when index exists
-    scores: dict[str, int] = {}
+
+    # Pass 1: texts + document frequency per term.
+    texts: dict[str, tuple[str, str]] = {}
+    df = {t: 0 for t in terms}
     for node_id in candidate_code_nodes(graph):
         attrs = graph.nodes[node_id]
         display = str(attrs.get("display") or node_id)
@@ -157,11 +168,30 @@ def find_relevant_nodes(graph, question: str, top: int = MAX_CODE_MATCHES) -> li
             f"{attrs.get('description', '')} {file} "
             f"{card_texts.get(node_id, '')}".lower()
         )
-        score = sum(3 for t in terms if _hits(t, names)) + sum(
-            1 for t in terms if _hits(t, prose)
+        texts[node_id] = (names, prose)
+        haystack = f"{names} {prose}"
+        for term in terms:
+            if _hits(term, haystack):
+                df[term] += 1
+
+    # Pass 2: score with idf weights.
+    import math
+
+    total = max(1, len(texts))
+    idf = {t: math.log1p(total / df[t]) if df[t] else 0.0 for t in terms}
+    scores: dict[str, float] = {}
+    for node_id, (names, prose) in texts.items():
+        score = sum(3 * idf[t] for t in terms if _hits(t, names)) + sum(
+            idf[t] for t in terms if _hits(t, prose)
         )
         if score > 0:
             scores[node_id] = score
+    return scores
+
+
+def find_relevant_nodes(graph, question: str, top: int = MAX_CODE_MATCHES) -> list[str]:
+    """Keyword channel: node ids best matching the question by words."""
+    scores = score_relevant_nodes(graph, question)
     return sorted(scores, key=lambda n: (-scores[n], n))[:top]
 
 
@@ -298,7 +328,7 @@ def context_pack(
 
 
 def _seam_nodes(
-    graph, anchors: list[str], per_anchor_cap: int = 6
+    graph, anchors: list[str], per_anchor_cap: int = 6, exclude_tests: bool = True
 ) -> list[tuple[str, int]]:
     """Boundary nodes 1 hop from the anchors over interface relations,
     ranked by how many distinct anchors touch them.
@@ -306,7 +336,9 @@ def _seam_nodes(
     Measured on the real graph: uncapped 1-hop from 12 anchors reached far
     nodes (far past any budget) because hub nodes have very high degree. Per-anchor,
     prefer specific neighbors (low degree) over hubs; globally, a node
-    touched by 3 anchors is signal while one touched by 1 is noise.
+    touched by 3 anchors is signal while one touched by 1 is noise. Test
+    files obey the same rule as retrieval: they never answer "what do I
+    build on" unless the question is about tests.
     """
     anchor_set = set(anchors)
     touched: dict[str, set[str]] = {}
@@ -318,8 +350,15 @@ def _seam_nodes(
         for src, dst, data in graph.out_edges(anchor, data=True):
             if data.get("relation") in g.INTERFACE_RELATIONS and dst not in anchor_set:
                 neighbors.append((graph.degree(dst), dst))
-        for _, node_id in sorted(set(neighbors))[:per_anchor_cap]:
+        picked = 0
+        for _, node_id in sorted(set(neighbors)):
+            if picked >= per_anchor_cap:
+                break
+            file = str(graph.nodes[node_id].get("file") or "")
+            if exclude_tests and looks_like_test_file(file):
+                continue
             touched.setdefault(node_id, set()).add(anchor)
+            picked += 1
     ranked = sorted(touched.items(), key=lambda kv: (-len(kv[1]), kv[0]))
     return [(node_id, len(anchors_)) for node_id, anchors_ in ranked]
 
@@ -392,13 +431,45 @@ def interface_pack(
     config = config or Config()
     max_chars = max(2_000, budget_tokens * 4)
     anchors = retrieve_nodes(graph, question, config, top=10)
+    # Anchor quality gate: the full-context pack expands only 3 hits and
+    # hides the ranking tail behind an index; interfaces would promote
+    # ranks 4-10 into full cards. A weak-everywhere match (well below the
+    # best keyword score AND absent from the semantic ranking) stays out —
+    # it was never evidence, just word coincidence.
+    from roger import embeddings
+
+    kw_scores = score_relevant_nodes(graph, question)
+    semantic = embeddings.semantic_rank(question, config, top=10)
+    semantic_set = set(semantic or [])
+    gated: list[str] = []
+    if kw_scores:
+        floor = 0.35 * max(kw_scores.values())
+        strong: list[str] = []
+        for rank, node_id in enumerate(anchors):
+            keep = kw_scores.get(node_id, 0.0) >= floor
+            if rank >= 3 and semantic is not None:
+                # Tail anchors need MEANING on their side, not just word
+                # overlap: when the question's rarest term matches nothing,
+                # every score is built from common words and junk ties the
+                # real thing. Demoted anchors stay visible in the
+                # More-contracts index, never silently dropped.
+                keep = keep and node_id in semantic_set
+            if keep or rank < 1:  # the top anchor always stands
+                strong.append(node_id)
+            else:
+                gated.append(str(graph.nodes[node_id].get("display", node_id)))
+        anchors = strong or anchors[:3]
     if not anchors:
         return (
             f"# Roger interfaces: {question}\n\n"
             "No matching code found. Try naming a function, class, or file — "
             "or the graph may need `roger update`."
         )
-    seam = _seam_nodes(graph, anchors)
+    # Seam only from the HEAD anchors: an anchor that barely made the cut
+    # gets its own card but no entourage — field-measured, one mediocre
+    # anchor otherwise seeded seven irrelevant cards through its neighbors.
+    wants_tests = any(t.startswith("test") for t in _terms(question))
+    seam = _seam_nodes(graph, anchors[:3], exclude_tests=not wants_tests)
 
     header = (
         f"# Roger interfaces: {question}\n\n"
@@ -418,7 +489,7 @@ def interface_pack(
         )
 
     blocks: list[str] = []
-    skipped: list[str] = []
+    skipped: list[str] = list(gated)
     used = len(header) + len(doc_note) + 400  # 400 ≈ the More-contracts index
     for node_id in anchors + [n for n, _ in seam]:
         card = _interface_card(graph, node_id)
