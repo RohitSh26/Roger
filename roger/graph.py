@@ -346,6 +346,48 @@ RELATION_VERBS = {
 _DEF_LINE_RE = re.compile(r"^\s*(async\s+def|def|class)\b")
 _DOCSTRING_QUOTES = ('"""', "'''")
 
+# Definition-ish line openers across the languages graphify indexes — used
+# only to re-find a drifted symbol, never to parse.
+# A node whose display IS a filename anchors at line 1 by definition.
+# (Local set: graph.py must not import freshness — that way lies a cycle.)
+_ANCHOR_SKIP_SUFFIXES = {
+    ".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".java", ".rb", ".rs", ".c",
+    ".h", ".cpp", ".cc", ".cs", ".sh", ".php", ".kt", ".swift", ".scala",
+    ".sql", ".md", ".markdown", ".toml", ".yaml", ".yml", ".json",
+}
+
+_DEF_ANY_RE = re.compile(
+    r"^\s*(?:export\s+|public\s+|private\s+|protected\s+|static\s+|final\s+)*"
+    r"(?:async\s+)?(?:def|class|func|fn|function|struct|interface|impl|type|trait)\b"
+)
+
+
+def _anchored_index(lines: list[str], start_idx: int, attrs: dict, file: str) -> int | None:
+    """Verify (and if needed re-find) the line that defines this node.
+
+    Graphify records a start line; when the file is edited without a
+    `roger update`, that line drifts and the block below it belongs to a
+    DIFFERENT symbol. Printing it under the original node's header — inside
+    a pack that promises VERBATIM source — is a confidently-cited wrong
+    answer, so the anchor is checked by name and re-found when possible.
+    Returns None when the symbol can no longer be located: an honest
+    absence beats the wrong function.
+    """
+    display = str(attrs.get("display") or "")
+    if not IDENTIFIER_NAME_RE.fullmatch(display):
+        return start_idx  # prose/docstring node: nothing to anchor on
+    if ("." + display.rsplit(".", 1)[-1]).lower() in _ANCHOR_SKIP_SUFFIXES:
+        return start_idx  # the node IS a file; its "definition" is line 1
+    name = display.removesuffix("()").rsplit(".", 1)[-1]
+    # Decorators sit above the def; multi-line signatures below it.
+    if any(name in line for line in lines[max(0, start_idx - 1) : start_idx + 2]):
+        return start_idx
+    definition = _DEF_LINE_RE if file.lower().endswith(".py") else _DEF_ANY_RE
+    for i, line in enumerate(lines):
+        if name in line and definition.match(line):
+            return i
+    return None
+
 
 def get_interface(attrs: dict, repo_root: Path | None = None) -> str:
     """The contract of a node: decorators + signature + first docstring
@@ -446,6 +488,12 @@ def get_source_snippet(
     match = _LOCATION_RE.search(str(attrs.get("source_location") or ""))
     start = int(match.group(1)) if match else 1
     start_idx = max(0, min(start - 1, len(lines) - 1))
+
+    anchored = _anchored_index(lines, start_idx, attrs, file)
+    if anchored is None:
+        return ""  # symbol no longer at/near the recorded line — say nothing
+    if anchored != start_idx:
+        start_idx, match = anchored, None  # recorded end line is stale too
 
     if match and match.group(2):  # explicit end recorded — trust it
         end_idx = min(int(match.group(2)) - 1, start_idx + max_lines - 1)

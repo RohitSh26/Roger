@@ -1800,11 +1800,21 @@ def test_agent_snippet_rules_are_binding() -> None:
 
     # The numbered rules agents must follow (field feedback: loose
     # guidance gets overlooked; rules with STOP conditions don't).
-    for marker in ("RULE 1", "RULE 2", "RULE 3", "RULE 4", "RULE 5"):
+    for marker in ("RULE 1", "RULE 2", "RULE 3", "RULE 4", "RULE 5", "RULE 6"):
         assert marker in AGENT_SNIPPET
     assert "VERBATIM" in AGENT_SNIPPET   # provenance claim stays
     assert "MODIFY" in AGENT_SNIPPET     # verification still required for writes
     assert "re-query ONCE" in AGENT_SNIPPET  # reformulation before grep fallback
+    # The imperative register is load-bearing: soft guidance was measurably
+    # ignored, so the header and the skip rule must both stay commands.
+    assert "MANDATORY" in AGENT_SNIPPET
+    assert "SKIP Roger entirely" in AGENT_SNIPPET
+    # Field report: agents called Roger for things it cannot help with.
+    # Each of these skip conditions must stay enumerable, not advisory.
+    for skip in ("ONE file read", "traceback", "this session", "not indexed"):
+        assert skip in AGENT_SNIPPET
+    assert "blast-radius" in AGENT_SNIPPET   # explain before rename/delete
+    assert "--budget 600" in AGENT_SNIPPET   # cheap orientation calls
     # The command palette: right verb for the intent, never copy-paste.
     for verb in ("roger explain", "roger path", "--interfaces"):
         assert verb in AGENT_SNIPPET

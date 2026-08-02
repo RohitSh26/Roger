@@ -645,6 +645,64 @@ def test_explain_unknown_symbol_is_none(graph) -> None:
     assert ask.explain_symbol(graph, "FluxCapacitor") is None
 
 
+def test_snippet_never_attributes_another_symbols_code(tmp_path) -> None:
+    # Graphify records a start LINE. Edit the file without `roger update`
+    # and that line drifts onto a DIFFERENT function — printing it under
+    # the original header, inside a pack that promises VERBATIM source,
+    # is a confidently-cited wrong answer. Re-find it or say nothing.
+    from roger.graph import get_source_snippet
+
+    source = tmp_path / "mod.py"
+    source.write_text(
+        "def alpha():\n    return 'a'\n\n\ndef beta():\n    return 'b'\n",
+        encoding="utf-8",
+    )
+    attrs = {"file": "mod.py", "display": "beta()", "source_location": "L5"}
+    assert "def beta" in get_source_snippet(attrs, repo_root=tmp_path)
+
+    # Two lines inserted above: the recorded line now points into alpha().
+    source.write_text(
+        "import os\nimport sys\n"
+        "def alpha():\n    return 'a'\n\n\ndef beta():\n    return 'b'\n",
+        encoding="utf-8",
+    )
+    drifted = get_source_snippet(attrs, repo_root=tmp_path)
+    assert "def alpha" not in drifted      # never another symbol's body
+    assert "def beta" in drifted           # re-found by name
+
+    gone = {"file": "mod.py", "display": "deleted_fn()", "source_location": "L5"}
+    assert get_source_snippet(gone, repo_root=tmp_path) == ""  # honest absence
+
+
+def test_retrieval_survives_an_index_that_outlived_its_nodes(graph, monkeypatch) -> None:
+    # vectors.db is a separate artifact on a separate clock: it can name
+    # nodes this graph no longer has (deleted code, or a graph rebuilt
+    # while the index lagged). That raised a raw KeyError mid-answer.
+    from roger import embeddings
+    from roger.config import Config
+
+    monkeypatch.setattr(
+        embeddings, "semantic_rank",
+        lambda *a, **k: ["ghost_node_from_an_older_graph", "payments.charge"],
+    )
+    nodes = ask.retrieve_nodes(graph, "how are payments charged?", Config())
+    assert "ghost_node_from_an_older_graph" not in nodes
+    assert all(n in graph for n in nodes)
+
+
+def test_weak_match_warning_only_fires_for_alien_questions(graph) -> None:
+    # Honest scope: this catches questions whose vocabulary the repo does
+    # not contain at all. It deliberately does NOT claim to catch
+    # plausible-but-wrong matches — measured, those are lexically
+    # indistinguishable from good ones.
+    from roger.config import Config
+
+    alien = ask.context_pack("kubernetes ingress TLS termination", graph, Config())
+    assert "Weak match" in alien
+    real = ask.context_pack("what charges the card?", graph, Config())
+    assert "Weak match" not in real
+
+
 def test_context_caps_open_up_for_cloud_backends() -> None:
     # Local: trimmed to the small num_ctx window. Cloud: 100k+ windows —
     # the 40-line class clip made honest models report truncation instead

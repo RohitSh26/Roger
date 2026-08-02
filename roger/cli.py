@@ -895,13 +895,18 @@ def use(
 
 AGENT_SNIPPET_START = "<!-- roger:start -->"
 AGENT_SNIPPET_END = "<!-- roger:end -->"
+AGENT_SNIPPET_VERSION = 2
+
 AGENT_SNIPPET = f"""{AGENT_SNIPPET_START}
+<!-- roger:snippet-version: {AGENT_SNIPPET_VERSION} -->
 ## Roger — MANDATORY first step for codebase questions
 
 Roger answers from a pre-built code graph and verbatim source. One call
-replaces 5-7 greps and file reads. Pick the verb that matches the intent —
-and FORMULATE the query yourself (extract the symbol or likely code
-vocabulary; never paste the user's sentence verbatim):
+replaces 5-7 greps and file reads — but each call also spends ~2,000
+tokens of the budget it exists to save, so RULE 2 matters as much as
+RULE 1. Pick the verb that matches the intent, and FORMULATE the query
+yourself (extract the symbol or likely code vocabulary; never paste the
+user's sentence verbatim):
 
     roger explain "<symbol>"      one function/class/file: where it lives,
                                   every caller, callee, import, reference
@@ -912,30 +917,69 @@ vocabulary; never paste the user's sentence verbatim):
                                   building on an existing layer: signatures,
                                   docstrings, relationships — no bodies
 
-RULE 1 — Roger FIRST, always. For ANY question about this codebase, your
-FIRST action is one of the verbs above. Never grep, search, or open files
-as a first step. "What calls X?" is `roger explain "X"`, not a grep.
+Add `--budget 600` when you only need orientation; the 2000 default is
+for when you are about to edit.
 
-RULE 2 — if the output answers the question, STOP. Code blocks are
+RULE 1 — Roger FIRST for anything you would otherwise grep for. If you
+cannot name the exact file you would open, that uncertainty IS the call.
+Never grep or search to find out where something lives. "What calls X?"
+is `roger explain "X"`, not a grep. Before you rename, delete, or change
+the signature of anything, `roger explain` it first — that is the
+blast-radius check, and skipping it is how callers get missed.
+
+RULE 2 — SKIP Roger entirely when any of these is true:
+  - you can answer with ONE file read you already know how to make;
+  - a traceback, the user, or your own earlier output already names the
+    file and line;
+  - it is about code YOU wrote or changed this session — that is not in
+    the graph yet; run `roger update` (seconds) first if Roger must see it;
+  - it is not about THIS repo: language or library semantics, dependency
+    error messages, general tooling questions;
+  - you already ran that query this session — reread that output;
+  - the artifact is not indexed: lockfiles, CI config, .env, git history
+    (code files and markdown docs ARE indexed).
+
+RULE 3 — if the output answers the question, STOP. Code blocks are
 VERBATIM source, mechanically extracted seconds ago — no AI wrote or
 summarized them. Re-reading a cited file returns byte-identical text.
 Answer from the output and cite its sources.
 
-RULE 3 — if it misses, re-query ONCE with different code vocabulary
-(e.g. "throttle" → rate limit, backoff, sleep) or a more specific verb.
-Only after that second miss may you fall back to grep and file reading.
+RULE 4 — if it misses, or the pack is headed by a weak-match warning,
+re-query ONCE with different code vocabulary (e.g. "throttle" → rate
+limit, backoff, sleep) or a more specific verb. Only after that second
+miss may you fall back to grep and file reading.
 
-RULE 4 — the ONLY reasons to open a file Roger already cites: you are
+RULE 5 — the ONLY reasons to open a file Roger already cites: you are
 about to MODIFY that code, a claim lacks a citation, citations conflict,
 or the output says it was truncated.
 
-RULE 5 — never run `roger ask` or `roger quiz`. Those spin the human's
+RULE 6 — never run `roger ask` or `roger quiz`. Those spin the human's
 own model backend and cost them money or compute. YOU do the reasoning —
 Roger only retrieves.
 {AGENT_SNIPPET_END}"""
 
 agent_app = typer.Typer(help="Teach coding agents to use Roger (no MCP, no server).")
 app.add_typer(agent_app, name="agent")
+
+
+def _agent_snippet_state() -> bool | None:
+    """True = current snippet, False = outdated, None = not installed.
+
+    An outdated snippet is worse than none: pre-v2 contracts told agents
+    "Roger FIRST, always" with no SKIP rules, which is exactly the
+    over-invocation engineers reported.
+    """
+    installed = [Path(name) for name, _, _ in AGENT_TARGETS if Path(name).exists()]
+    carrying = [
+        p for p in installed
+        if AGENT_SNIPPET_START in p.read_text(encoding="utf-8", errors="replace")
+    ]
+    if not carrying:
+        return None
+    marker = f"roger:snippet-version: {AGENT_SNIPPET_VERSION}"
+    return all(
+        marker in p.read_text(encoding="utf-8", errors="replace") for p in carrying
+    )
 
 
 @app.command()
@@ -1031,9 +1075,10 @@ def doctor() -> None:
 
         # Agent integration
         check(
-            Path("AGENTS.md").exists() or Path(".github/copilot-instructions.md").exists() or None,
-            "agent instructions installed",
-            "no agent instructions in this repo (fine unless you use AI agents)",
+            _agent_snippet_state(),
+            f"agent instructions installed (v{AGENT_SNIPPET_VERSION})",
+            "agent instructions are missing or from an older Roger — agents "
+            "may over-call Roger or spend your model backend",
             "roger agent install",
         )
 
@@ -1138,8 +1183,14 @@ def explain(name: str) -> None:
     result = explain_symbol(graph, name)
     activity.log_event("explain", question=name[:200], matched=result is not None)
     if result is None:
-        typer.echo(f"'{name}' is not in the graph. Check the name, or run: roger update")
-        raise typer.Exit(code=1)
+        # A miss is a valid answer, not a failure: agent harnesses render a
+        # non-zero exit as "the tool is broken" and stop using Roger for the
+        # rest of the session. Say NOT FOUND plainly and exit 0.
+        typer.echo(
+            f"NOT FOUND: '{name}' is not in the graph. Check the name, "
+            "or run: roger update"
+        )
+        return
     typer.echo(result)
 
 

@@ -206,7 +206,7 @@ not text) → the plain-markdown output lands in the agent's context as tool
 output → the agent's model synthesizes the answer. Roger's own configured
 backend (local Ollama, or Azure) is used **only** by the human commands
 `roger ask` and `roger quiz` — and the agent instructions explicitly
-forbid agents from calling those (RULE 5), precisely so an agent never
+forbid agents from calling those (RULE 6), precisely so an agent never
 spins your local model or your cloud deployment. `roger log` shows every
 call with its verb and whether a human or an agent made it — that's your
 audit trail.
@@ -230,6 +230,10 @@ purpose — `roger context` (without the flag) expands full code when the
 agent genuinely needs to read an implementation.
 
 One rule for stacked agents: **run `roger update` between stack layers.**
+The agent instructions say the same thing (RULE 2): code written this
+session is not in the graph until you refresh it, so an agent that must
+see fresh code refreshes first rather than asking about code Roger
+cannot see yet.
 The graph only knows code that has been indexed — agent 2 cannot see the
 interfaces agent 1 just wrote until the map refreshes (it takes seconds
 and shows its progress).

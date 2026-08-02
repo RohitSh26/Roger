@@ -96,7 +96,14 @@ def retrieve_nodes(
     from roger import embeddings
 
     keyword = find_relevant_nodes(graph, question, top=30)
-    semantic = embeddings.semantic_rank(question, config or Config(), top=30)
+    # The index is a separate artifact on a separate clock: it can name
+    # nodes this graph no longer has (code deleted, or a graph rebuilt
+    # while the index lags). Those ids are meaningless here, and reading
+    # their attributes raised a raw KeyError mid-answer.
+    semantic = [
+        n for n in (embeddings.semantic_rank(question, config or Config(), top=30) or [])
+        if n in graph
+    ]
     if semantic and not any(t.startswith("test") for t in _terms(question)):
         # Same rule as the keyword channel: tests never answer "how does X
         # work" — similarity must not smuggle them back in.
@@ -284,6 +291,44 @@ def build_context(
     return "\n\n".join(blocks), sources
 
 
+def _weak_match_warning(graph, question: str, sources: list[str]) -> str:
+    """A one-line honesty header when nothing here really covers the question.
+
+    Retrieval always returns its best rows, so a question about something
+    this repo does not do comes back looking exactly like a good hit —
+    cited, verbatim, confident (measured: "connection pooling retries"
+    returned _community_pool() on the word "pool"). Absolute score cannot
+    separate the two: rare-but-irrelevant terms outscore genuine matches.
+    What does separate them is COVERAGE — how many of the question's terms
+    the repo knows at all, and whether any single match carries more than
+    one of them.
+    """
+    terms = [t for t in _terms(question) if len(t) > 2]
+    if len(terms) < 3:
+        return ""  # too short to judge; silence beats a false alarm
+    corpus = " ".join(
+        f"{graph.nodes[n].get('display', '')} {graph.nodes[n].get('file', '')}"
+        for n in graph.nodes
+    ).lower()
+    # Deliberately conservative: only the terms the repo does not know AT
+    # ALL count against it. A tighter rule is not available lexically —
+    # measured, "connection pooling retries" scores its terms as known
+    # because `pool` and `retrie` really are substrings here, so a
+    # plausible-but-wrong question is indistinguishable from a right one
+    # by any keyword test. This catches the alien question, not the
+    # subtly-wrong one; claiming more would be a lie in the output.
+    unknown = [t for t in terms if not _hits(t, corpus)]
+    if len(unknown) > len(terms) / 2:
+        return (
+            "> ⚠ Weak match — this repo has no code or docs mentioning "
+            + ", ".join(f'"{t}"' for t in unknown)
+            + ". The excerpts below are the closest rows retrieval could "
+            "find and are probably unrelated; re-query with this repo's own "
+            "vocabulary, or answer from your own knowledge instead.\n\n"
+        )
+    return ""
+
+
 def context_pack(
     question: str,
     graph,
@@ -339,6 +384,7 @@ def context_pack(
         "mechanically extracted just now — not AI-generated summaries. "
         "Re-reading the cited lines returns identical text.\n\n"
     )
+    provenance += _weak_match_warning(graph, question, sources)
     pack = (
         f"# Roger context: {question}\n\n{provenance}{facts_block}{context}{more_section}"
         "\n\n## Sources\n" + "\n".join(f"- {s}" for s in sources)

@@ -323,6 +323,30 @@ def test_style_covers_the_design_states() -> None:
     assert "div.stButton > button" not in STYLE
 
 
+def test_upgrading_an_old_snippet_leaves_exactly_one(tmp_path, monkeypatch) -> None:
+    # The start marker is the upgrade hinge: version it and every existing
+    # install fails the match and gets a SECOND Roger section appended —
+    # the worst outcome for a snippet that competes for context window.
+    from roger import cli
+
+    monkeypatch.chdir(tmp_path)
+    agents = tmp_path / "AGENTS.md"
+    v1 = (
+        f"# House rules\n\n{cli.AGENT_SNIPPET_START}\n"
+        "## Roger — MANDATORY first step for codebase questions\n"
+        "RULE 1 — Roger FIRST, always.\n"
+        f"{cli.AGENT_SNIPPET_END}\n"
+    )
+    agents.write_text(v1, encoding="utf-8")
+
+    assert cli._install_snippet(agents) == "updated"
+    text = agents.read_text(encoding="utf-8")
+    assert text.count(cli.AGENT_SNIPPET_START) == 1
+    assert f"roger:snippet-version: {cli.AGENT_SNIPPET_VERSION}" in text
+    assert "Roger FIRST, always" not in text   # the absolutist rule is gone
+    assert "# House rules" in text             # the human's own content survives
+
+
 def test_app_has_the_explore_view() -> None:
     from pathlib import Path
 
