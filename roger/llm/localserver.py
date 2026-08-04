@@ -28,6 +28,10 @@ from roger.exceptions import LocalServerError
 from roger.llm.azure import SYSTEM_PROMPT
 from roger.llm.local import _parse_json_lenient, strip_thinking
 
+# base URL -> model id the server reported (per process; a user restarting
+# their own server restarts Roger's next command too).
+_discovered_model: dict[str, str] = {}
+
 _NOT_RUNNING = (
     "✗ Roger: no OpenAI-compatible server is answering at {url}\n"
     "  Start one, then re-run. With llama.cpp:\n"
@@ -65,6 +69,30 @@ def ensure_ready(config: Config) -> None:
         raise LocalServerError(
             _NOT_RUNNING.format(url=_base(config), port=_port(config))
         )
+
+
+def _model_id(config: Config, timeout: float = 3.0) -> str:
+    """The model name to put in the request.
+
+    llama-server ignores this field — it serves whatever was loaded at
+    launch. LM Studio does NOT: it uses the name to pick the model and to
+    just-in-time load it, answering 404 "No models loaded" when the name
+    resolves to nothing. So a placeholder is not safe; ask the server what
+    it actually has and send that. Cached per URL because it cannot change
+    without the user restarting their own server.
+    """
+    if config.model.server_model:
+        return config.model.server_model
+    base = _base(config)
+    if base in _discovered_model:
+        return _discovered_model[base]
+    try:
+        data = requests.get(f"{base}/v1/models", timeout=timeout).json()
+        name = str(data["data"][0]["id"])
+    except (requests.RequestException, ValueError, KeyError, IndexError):
+        return "local-model"  # llama.cpp-style server that ignores the field
+    _discovered_model[base] = name
+    return name
 
 
 def loaded_model(config: Config, timeout: float = 2.0) -> str:
@@ -108,7 +136,7 @@ def chat_local_server(
     payload = {
         # Servers with one model loaded ignore this; llama-swap and
         # LM Studio use it to pick, so send it when the user set one.
-        "model": config.model.server_model or "local-model",
+        "model": _model_id(config),
         "messages": messages,
     }
     try:
@@ -126,8 +154,9 @@ def chat_local_server(
         raise LocalServerError(
             f"✗ Roger: the local server at {_base(config)} refused the request "
             f"(HTTP {resp.status_code}): {detail}\n"
-            "  If it loads models on demand, check the --model name: "
-            "roger use local-server --model <name>"
+            "  If your server hosts several models, name the one to use:\n"
+            "    roger use local-server --model <name>   "
+            "(see the list at " + _base(config) + "/v1/models)"
         )
     try:
         content = resp.json()["choices"][0]["message"]["content"] or ""

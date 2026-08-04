@@ -260,10 +260,19 @@ roger use local-server --url http://127.0.0.1:1234     # LM Studio
 ```
 
 Roger never starts or stops that server — the process is yours. Anything
-speaking the OpenAI chat-completions API works. One caveat worth knowing:
-meaning-based search (below) uses Ollama's embedding model, so without
-Ollama installed, search falls back to keyword matching. Everything else
-works exactly the same.
+speaking the OpenAI chat-completions API works.
+
+**With LM Studio specifically:** open the *Developer* tab and press **Start
+Server** (or run `lms server start`), which listens on port 1234 — that is
+why the URL differs from the llama.cpp example above. Roger then asks the
+server which model it has loaded and uses that automatically, so there is
+nothing else to configure. If you keep several models and want a specific
+one, name it: `roger use local-server --url http://127.0.0.1:1234 --model
+qwen/qwen3-8b` (the names are listed at `http://127.0.0.1:1234/v1/models`).
+
+One caveat worth knowing for any of these: meaning-based search (below)
+uses Ollama's embedding model, so without Ollama installed, search falls
+back to keyword matching. Everything else works exactly the same.
 
 **Option 3 — your company's Azure (for enterprises).** If your organization
 provides Claude through Azure AI Foundry, ask your platform team for two

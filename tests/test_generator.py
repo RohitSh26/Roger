@@ -1627,6 +1627,7 @@ def localserver(monkeypatch):
     from roger.llm import localserver as mod
 
     monkeypatch.setattr(mod, "is_server_running", lambda *a, **k: True)
+    monkeypatch.setattr(mod, "_discovered_model", {})  # never leak between tests
     return mod
 
 
@@ -1662,6 +1663,44 @@ def test_ask_path_sends_no_json_system_prompt(localserver, monkeypatch) -> None:
 
     localserver.call_local_server("q", _server_config())
     assert seen["roles"] == ["system", "user"]  # generation still gets it
+
+
+def test_model_name_is_discovered_for_servers_that_check_it(localserver, monkeypatch) -> None:
+    # llama.cpp ignores the request's `model` field; LM Studio uses it to
+    # select and JIT-load, answering 404 "No models loaded" for a name it
+    # cannot resolve. Sending a placeholder therefore breaks LM Studio, so
+    # Roger asks the server what it has and sends that back.
+    loaded = "qwen/qwen3-8b"
+    monkeypatch.setattr(
+        localserver.requests, "get",
+        lambda *a, **k: FakeResponse({"data": [{"id": loaded}]}),
+    )
+    seen = {}
+
+    def strict_post(url, json=None, timeout=None):
+        seen["model"] = json["model"]
+        if json["model"] != loaded:      # exactly what LM Studio does
+            return FakeResponse({"error": {"message": "No models loaded"}}, 404)
+        return FakeResponse({"choices": [{"message": {"content": "ok"}}]})
+
+    monkeypatch.setattr(localserver.requests, "post", strict_post)
+    config = _server_config(url="http://127.0.0.1:1234")
+    assert localserver.chat_local_server("q", config) == "ok"
+    assert seen["model"] == loaded
+
+    # An explicit --model always wins over discovery.
+    named = _server_config(url="http://127.0.0.1:1234", model="my-model")
+    assert localserver._model_id(named) == "my-model"
+
+
+def test_model_discovery_degrades_when_the_server_wont_say(localserver, monkeypatch) -> None:
+    # A server that doesn't implement /v1/models still works, because the
+    # servers that ignore the field are exactly the ones that don't need it.
+    monkeypatch.setattr(
+        localserver.requests, "get",
+        lambda *a, **k: FakeResponse({"nope": True}),
+    )
+    assert localserver._model_id(_server_config()) == "local-model"
 
 
 def test_local_server_down_names_the_fix(monkeypatch) -> None:
