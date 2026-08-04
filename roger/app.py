@@ -97,6 +97,10 @@ def _generate_session(count: int) -> None:
 
 def _backend_label() -> str:
     config, _, _, _ = _load_world()
+    if config.model.provider == "local-server":
+        from roger.llm.localserver import loaded_model
+
+        return f"Local server · {loaded_model(config)}"
     if config.model.provider.startswith("azure-"):
         return f"Azure Foundry · {config.model.azure_deployment}"
     name = config.model.local.rsplit("/", 1)[-1]

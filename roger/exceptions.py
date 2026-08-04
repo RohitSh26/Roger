@@ -27,3 +27,8 @@ class CacheError(RogerError):
 
 class CloudBackendError(RogerError):
     """The optional Azure Foundry Anthropic backend is misconfigured or failed."""
+
+
+class LocalServerError(RogerError):
+    """An OpenAI-compatible local server (llama.cpp, LM Studio…) is
+    unreachable or answered with something Roger can't use."""

@@ -32,6 +32,7 @@ from roger.ask import answer_question, context_pack, interface_pack
 from roger.config import (
     CONFIG_PATH,
     is_azure_provider,
+    is_ollama_provider,
     ROGER_DIR,
     Config,
     load_config,
@@ -42,6 +43,7 @@ from roger.config import (
 from roger.exceptions import (
     CacheError,
     CloudBackendError,
+    LocalServerError,
     GraphNotFoundError,
     ModelNotRegisteredError,
     OllamaNotRunningError,
@@ -382,7 +384,7 @@ def _ensure_model_ready(config: Config) -> None:
     are user-managed; their existing error paths already name the remedy.
     Non-TTY callers get the standard error, never a prompt.
     """
-    if is_azure_provider(config.model.provider) or config.model.local != DEFAULT_MODEL:
+    if not is_ollama_provider(config.model.provider) or config.model.local != DEFAULT_MODEL:
         return
     from roger.llm.local import MODEL_NOT_REGISTERED_MSG, is_ollama_running
 
@@ -413,6 +415,19 @@ def _ensure_model(config: Config) -> None:
     user's model tag at the MiniCPM base, silently destroying it. Azure
     provider → verify configuration; no Ollama involvement at all.
     """
+    if config.model.provider == "local-server":
+        from roger.llm.localserver import ensure_ready as server_ready, loaded_model
+
+        try:
+            server_ready(config)
+        except LocalServerError as exc:
+            _fail(str(exc))
+        console.print(
+            f"✓ Using your local server at {config.model.server_url} "
+            f"({loaded_model(config)}) — nothing leaves this machine."
+        )
+        return
+
     if is_azure_provider(config.model.provider):
         try:
             if config.model.provider == "azure-anthropic":
@@ -486,7 +501,7 @@ def _run_init(config: Config) -> None:
 
     # 3+4. Ollama installed and running? (Skipped entirely on the Azure
     # provider — nothing local to install.)
-    if not is_azure_provider(config.model.provider):
+    if is_ollama_provider(config.model.provider):
         if shutil.which("ollama") is None:
             _fail(
                 "✗ Roger: Ollama is not installed.\n"
@@ -506,7 +521,7 @@ def _run_init(config: Config) -> None:
     #    downloaded here: it installs (one keypress) the first time a quiz
     #    or question needs it, so setup stays fast and context-only users
     #    never pay ~1.15 GB for a model they don't use.
-    if is_azure_provider(config.model.provider) or config.model.local != DEFAULT_MODEL:
+    if not is_ollama_provider(config.model.provider) or config.model.local != DEFAULT_MODEL:
         _ensure_model(config)
 
     # 6-8. .roger/ directory, default config, databases.
@@ -526,7 +541,9 @@ def _run_init(config: Config) -> None:
         f"✓ Graph built: {config.graph.path} "
         f"({graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges)"
     )
-    if is_azure_provider(config.model.provider):
+    if config.model.provider == "local-server":
+        console.print(f"✓ Model ready: your server at {config.model.server_url}")
+    elif is_azure_provider(config.model.provider):
         console.print(f"✓ Model ready: {config.model.azure_deployment} (Azure Foundry)")
     elif config.model.local != DEFAULT_MODEL:
         console.print(f"✓ Model ready: {config.model.local} (custom)")
@@ -739,11 +756,12 @@ def quiz(
         lambda g_, n: _pick_quiz_nodes(g_, n, config.graph.god_node_weight),
     )
 
-    backend = (
-        f"Azure Foundry '{config.model.azure_deployment}'"
-        if is_azure_provider(config.model.provider)
-        else f"Ollama '{config.model.local}'"
-    )
+    if config.model.provider == "local-server":
+        backend = f"your local server at {config.model.server_url}"
+    elif is_azure_provider(config.model.provider):
+        backend = f"Azure Foundry '{config.model.azure_deployment}'"
+    else:
+        backend = f"Ollama '{config.model.local}'"
     console.print(
         f"Preparing {total} {config.quiz.default_difficulty} questions via {backend} — "
         "the rest generate as you answer…"
@@ -828,15 +846,25 @@ def update(
 @app.command()
 def use(
     provider: str = typer.Argument(
-        ..., help='Backend: "ollama", "azure" (Claude), or "foundry" (any Foundry model)'
+        ...,
+        help='Backend: "ollama", "local-server" (llama.cpp/LM Studio), '
+             '"azure" (Claude), or "foundry" (any Foundry model)',
     ),
     endpoint: str = typer.Option("", "--endpoint", help="Azure Foundry endpoint URL"),
     deployment: str = typer.Option("", "--deployment", help="Foundry deployment name"),
-    model: str = typer.Option("", "--model", help="Ollama model name (e.g. qwen2.5:7b)"),
+    model: str = typer.Option(
+        "", "--model",
+        help="Model name — Ollama tag, or the name your local server expects",
+    ),
+    url: str = typer.Option(
+        "", "--url", help="Local server URL (default http://127.0.0.1:8080)"
+    ),
 ) -> None:
     """Switch the generation backend — no TOML editing required.
 
     Examples:
+      roger use local-server                       (llama.cpp on :8080)
+      roger use local-server --url http://127.0.0.1:1234   (LM Studio)
       roger use azure --endpoint https://acme.services.ai.azure.com/anthropic --deployment claude-x
       roger use foundry --endpoint https://acme.services.ai.azure.com --deployment gpt-4o-mini
       roger use ollama --model qwen2.5:7b-instruct-q4_K_M
@@ -850,6 +878,32 @@ def use(
         _fail(str(exc))
         return
     config.model.provider = target
+
+    if target == "local-server":
+        if url:
+            config.model.server_url = url
+        if model:
+            config.model.server_model = model
+        save_config(config)
+        from roger.llm.localserver import is_server_running, loaded_model
+
+        console.print(
+            f"✓ Backend: your own server at {config.model.server_url}. "
+            "Applies to quiz, guard, ask, and the app."
+        )
+        if is_server_running(config):
+            console.print(f"  Reachable now — serving '{loaded_model(config)}'.")
+        else:
+            console.print(
+                f"  Nothing is answering there yet. Start your server, e.g.\n"
+                "    llama-server -hf <user>/<repo>-GGUF:Q4_K_M --port 8080 -c 8192\n"
+                "  Roger never starts or stops it — that process is yours."
+            )
+        console.print(
+            "  [dim]Note: meaning-based search still uses Ollama's embedding "
+            "model. Without Ollama, search falls back to keywords.[/dim]"
+        )
+        return
 
     if is_azure_provider(target):
         if endpoint:
@@ -1040,7 +1094,17 @@ def doctor() -> None:
             )
 
         # Backend (matters for ask/quiz; roger context needs none)
-        if config.model.provider == "azure-foundry":
+        if config.model.provider == "local-server":
+            from roger.llm.localserver import is_server_running, loaded_model
+
+            running = is_server_running(config)
+            check(running or None,
+                  f"local server reachable at {config.model.server_url}"
+                  + (f" ({loaded_model(config)})" if running else ""),
+                  f"nothing is answering at {config.model.server_url} — quizzes "
+                  "and 'roger ask' need it; 'roger context' works without it",
+                  "start it (llama-server --port 8080 …), or: roger use ollama")
+        elif config.model.provider == "azure-foundry":
             from roger.llm.foundry import API_KEY_ENV as FOUNDRY_KEY_ENV, _api_key
 
             check(bool(_api_key()),
@@ -1356,7 +1420,8 @@ def ask(
     with console.status("[dim]Reading the codebase…[/dim]"):
         try:
             answer, sources = answer_question(question, graph, config)
-        except (OllamaNotRunningError, ModelNotRegisteredError, CloudBackendError, ValueError) as exc:
+        except (OllamaNotRunningError, ModelNotRegisteredError, CloudBackendError,
+                LocalServerError, ValueError) as exc:
             _fail(str(exc))
             return
     activity.log_event(

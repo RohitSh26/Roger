@@ -16,9 +16,21 @@ Ollama LLM (MiniCPM5-1B) to generate questions. Full details in ROGER_SPEC.md.
 
 ## Decisions Already Made — Do Not Revisit
 
-**Local-first LLM; one sanctioned cloud exception (amended 2026-07-30 by Rohit).**
-The default is fully local via Ollama; if Ollama is not running, raise a clear error
-with setup instructions. The ONLY permitted cloud integration is the user's own
+**Local-first LLM; two local backends, one sanctioned cloud exception
+(amended 2026-08-04 by Rohit).** The default is fully local via Ollama; if
+Ollama is not running, raise a clear error with setup instructions. Ollama
+stays the DEFAULT on engineering merit, not habit: it keeps the model
+resident between Roger's short-lived CLI invocations and manages downloads
+behind one keypress. A second local backend is permitted —
+`provider = "local-server"` (roger/llm/localserver.py): any
+OpenAI-compatible server the USER runs (llama.cpp's llama-server, LM Studio,
+Jan, koboldcpp, llama-swap, ramalama), configured with
+`roger use local-server --url …`. Named for the protocol, never a vendor.
+Roger NEVER starts, stops, installs, or bundles that server — the Simplicity
+Doctrine forbids daemonizing, and CLAUDE.md forbids vendoring engines. No API
+key (localhost). Semantic search still needs Ollama's embedding model; without
+it Roger falls back to keyword retrieval, and that trade-off must stay
+documented. The ONLY permitted cloud integration is the user's own
 opt-in Azure AI Foundry resource, reachable through two API shapes (amended
 2026-07-30 by Rohit): `provider = "azure-anthropic"` (Claude deployments,
 Anthropic Messages API, roger/llm/azure.py, key from AZURE_ANTHROPIC_API_KEY)

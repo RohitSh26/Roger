@@ -53,6 +53,11 @@ class ModelConfig:
     provider: str = "ollama"
     azure_endpoint: str = ""    # e.g. https://<resource>.services.ai.azure.com/anthropic
     azure_deployment: str = ""  # the Claude deployment/model name in Foundry
+    # provider = "local-server": any OpenAI-compatible server the user runs
+    # themselves (llama.cpp's llama-server, LM Studio, Jan, llama-swap…).
+    # Roger never starts or stops it — the user owns that process.
+    server_url: str = "http://127.0.0.1:8080"
+    server_model: str = ""      # blank = whatever the server has loaded
 
 
 @dataclass
@@ -118,7 +123,29 @@ _PROVIDER_ALIASES = {
     "foundry": "azure-foundry",
     "azure-openai": "azure-foundry",
     "azure_openai": "azure-foundry",
+    # A local OpenAI-compatible server the user runs. Named for the
+    # protocol, not the vendor — one client serves them all.
+    "local-server": "local-server",
+    "local_server": "local-server",
+    "localserver": "local-server",
+    "llamacpp": "local-server",
+    "llama-cpp": "local-server",
+    "llama.cpp": "local-server",
+    "llama": "local-server",
+    "lmstudio": "local-server",
+    "lm-studio": "local-server",
+    "jan": "local-server",
 }
+
+
+def is_ollama_provider(provider: str) -> bool:
+    """Does this provider use Ollama's own model management?
+
+    Only the default does. Everything else (Azure, a local OpenAI-compatible
+    server) manages its own models, so Roger must not try to register,
+    download, or verify anything in Ollama for them.
+    """
+    return provider == "ollama"
 
 
 def is_azure_provider(provider: str) -> bool:
@@ -133,8 +160,10 @@ def _normalize_provider(raw: Any) -> str:
     raise ValueError(
         f"✗ Roger: unknown model provider {raw!r} in .roger/config.toml.\n"
         '  Valid values under [model]: provider = "ollama" (default, local),\n'
-        '  "azure-anthropic" (Claude on Foundry), or "azure-foundry"\n'
-        '  (any other Foundry-deployed model, e.g. gpt-4o-mini).'
+        '  "azure-anthropic" (Claude on Foundry), "azure-foundry"\n'
+        '  (any other Foundry-deployed model, e.g. gpt-4o-mini), or\n'
+        '  "local-server" (llama.cpp / LM Studio / any OpenAI-compatible\n'
+        '  server you run yourself).'
     )
 
 

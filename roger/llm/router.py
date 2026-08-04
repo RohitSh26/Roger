@@ -160,6 +160,10 @@ def _call_model(prompt: str, config: Config) -> dict:
         from roger.llm import foundry
 
         return foundry.call_foundry(prompt, config)
+    if config.model.provider == "local-server":
+        from roger.llm import localserver
+
+        return localserver.call_local_server(prompt, config)
     with _OLLAMA_LOCK:
         return local.call_local(
             prompt,
@@ -177,6 +181,10 @@ def chat_with_model(prompt: str, config: Config) -> str:
         from roger.llm import foundry
 
         return foundry.chat_foundry(prompt, config)
+    if config.model.provider == "local-server":
+        from roger.llm import localserver
+
+        return localserver.chat_local_server(prompt, config)
     with _OLLAMA_LOCK:
         return local.chat_local(
             prompt,
@@ -194,6 +202,10 @@ def ensure_backend(config: Config) -> None:
         from roger.llm import foundry
 
         foundry.ensure_ready(config)
+    elif config.model.provider == "local-server":
+        from roger.llm import localserver
+
+        localserver.ensure_ready(config)
     elif not local.is_ollama_running(config.ollama.url):
         raise OllamaNotRunningError(local.OLLAMA_NOT_RUNNING_MSG)
 

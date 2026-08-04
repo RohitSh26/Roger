@@ -1611,6 +1611,127 @@ def test_foundry_cache_model_id_is_distinct(graph: nx.DiGraph) -> None:
     assert _model_id(_azure_config()) != _model_id(_foundry_config())
 
 
+# --- local OpenAI-compatible server (llama.cpp, LM Studio, Jan…) -------------------
+
+
+def _server_config(url: str = "http://127.0.0.1:8080", model: str = ""):
+    from roger.config import Config, ModelConfig
+
+    return Config(
+        model=ModelConfig(provider="local-server", server_url=url, server_model=model)
+    )
+
+
+@pytest.fixture()
+def localserver(monkeypatch):
+    from roger.llm import localserver as mod
+
+    monkeypatch.setattr(mod, "is_server_running", lambda *a, **k: True)
+    return mod
+
+
+def test_local_server_payload_has_no_key_and_no_sampling(localserver, monkeypatch) -> None:
+    sent = {}
+
+    def fake_post(url, json=None, timeout=None):
+        sent.update(url=url, body=json)
+        return FakeResponse({"choices": [{"message": {"content": "<think>x</think>hi"}}]})
+
+    monkeypatch.setattr(localserver.requests, "post", fake_post)
+    assert localserver.chat_local_server("prompt", _server_config()) == "hi"
+    assert sent["url"] == "http://127.0.0.1:8080/v1/chat/completions"
+    # model + messages only: no sampling params, no token caps, no auth —
+    # the server is on localhost and takes its settings at launch.
+    assert set(sent["body"]) == {"model", "messages"}
+
+
+def test_ask_path_sends_no_json_system_prompt(localserver, monkeypatch) -> None:
+    # Field-hit on a live llama-server: Roger's system prompt says "output
+    # valid JSON only" — right for quiz questions, and it made the model
+    # answer `roger ask` with {"answer": "..."} instead of prose. Ollama's
+    # chat path sends no system message either.
+    seen = {}
+
+    def fake_post(url, json=None, timeout=None):
+        seen["roles"] = [m["role"] for m in json["messages"]]
+        return FakeResponse({"choices": [{"message": {"content": '{"questions": []}'}}]})
+
+    monkeypatch.setattr(localserver.requests, "post", fake_post)
+    localserver.chat_local_server("q", _server_config())
+    assert seen["roles"] == ["user"]
+
+    localserver.call_local_server("q", _server_config())
+    assert seen["roles"] == ["system", "user"]  # generation still gets it
+
+
+def test_local_server_down_names_the_fix(monkeypatch) -> None:
+    from roger.exceptions import LocalServerError
+    from roger.llm import localserver as mod
+
+    monkeypatch.setattr(mod, "is_server_running", lambda *a, **k: False)
+    with pytest.raises(LocalServerError) as excinfo:
+        mod.chat_local_server("q", _server_config())
+    message = str(excinfo.value)
+    assert "llama-server" in message          # how to start one
+    assert "roger use ollama" in message      # how to go back
+
+
+def test_loaded_model_never_shows_a_sha256_blob(localserver, monkeypatch) -> None:
+    # llama-server reports the model's PATH as its id; served out of Ollama's
+    # blob store that is a 64-char hash, which must never reach a banner.
+    blob = "/Users/x/.ollama/models/blobs/sha256-8125095ae223278e728adb4148a8a466"
+    monkeypatch.setattr(
+        localserver.requests, "get",
+        lambda *a, **k: FakeResponse({"data": [{"id": blob}]}),
+    )
+    assert localserver.loaded_model(_server_config()) == "loaded model"
+    monkeypatch.setattr(
+        localserver.requests, "get",
+        lambda *a, **k: FakeResponse({"data": [{"id": "/models/qwen3-8b.gguf"}]}),
+    )
+    assert localserver.loaded_model(_server_config()) == "qwen3-8b"
+
+
+def test_router_dispatches_to_local_server_without_touching_ollama(
+    graph: nx.DiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from roger.llm import localserver as mod
+
+    def no_ollama(*args, **kwargs):
+        raise AssertionError("local-server provider must never touch Ollama")
+
+    monkeypatch.setattr(local, "is_ollama_running", no_ollama)
+    monkeypatch.setattr(local, "call_local", no_ollama)
+    monkeypatch.setattr(mod, "is_server_running", lambda *a, **k: True)
+    monkeypatch.setattr(
+        mod, "call_local_server",
+        lambda prompt, config, **kw: {
+            "questions": [{
+                "question": "Why does this keep only the best hit per artifact?",
+                "options": {"A": "dedupe", "B": "speed", "C": "memory", "D": "tokens"},
+                "correct": "A", "explanation": "e",
+            }]
+        },
+    )
+    node = get_node(graph, "payments.charge")
+    assert router.get_questions(node, graph, "medium", 2, config=_server_config())
+
+
+def test_local_server_cache_key_is_distinct() -> None:
+    from roger.generator import _model_id
+
+    assert _model_id(_server_config(model="qwen3")) == "local-server:qwen3"
+    assert _model_id(_server_config()) != _model_id(_azure_config())
+
+
+def test_only_ollama_provider_manages_ollama_models() -> None:
+    from roger.config import is_ollama_provider
+
+    assert is_ollama_provider("ollama")
+    for other in ("local-server", "azure-anthropic", "azure-foundry"):
+        assert not is_ollama_provider(other)
+
+
 # --- roger ask -----------------------------------------------------------------
 
 

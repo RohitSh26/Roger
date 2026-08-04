@@ -238,7 +238,7 @@ roger update
 
 ## Where the AI runs (one-time choice per repository)
 
-Roger's question-writing and answering need an AI model. You have three options,
+Roger's question-writing and answering need an AI model. You have four options,
 and switching between them is one command — no files to edit:
 
 **Option 1 — your own computer (the default).** Private, free, works offline.
@@ -250,7 +250,22 @@ ollama pull qwen2.5:7b-instruct-q4_K_M
 roger use ollama --model qwen2.5:7b-instruct-q4_K_M
 ```
 
-**Option 2 — your company's Azure (for enterprises).** If your organization
+**Option 2 — your own inference server (llama.cpp, LM Studio, Jan…).**
+Already running `llama-server` or LM Studio? Point Roger at it and skip
+Ollama entirely — still fully local, still nothing leaving your machine:
+
+```bash
+roger use local-server                                 # llama.cpp on :8080
+roger use local-server --url http://127.0.0.1:1234     # LM Studio
+```
+
+Roger never starts or stops that server — the process is yours. Anything
+speaking the OpenAI chat-completions API works. One caveat worth knowing:
+meaning-based search (below) uses Ollama's embedding model, so without
+Ollama installed, search falls back to keyword matching. Everything else
+works exactly the same.
+
+**Option 3 — your company's Azure (for enterprises).** If your organization
 provides Claude through Azure AI Foundry, ask your platform team for two
 values — an *endpoint* (a URL) and a *deployment name* — then:
 
@@ -264,7 +279,7 @@ lives only in your terminal session, never in a file. That's deliberate: files
 get committed to git; your key must not be. To avoid retyping it, add that
 line to the file `~/.zshrc` (your terminal's startup file).
 
-**Option 3 — a budget model on your company's Azure.** Claude is excellent but
+**Option 4 — a budget model on your company's Azure.** Claude is excellent but
 premium-priced. Azure AI Foundry also serves far cheaper models that are
 plenty for quiz questions and everyday answers — for example, `gpt-4o-mini`
 costs about **1/25th** of Claude Sonnet per token, and `Phi-4-mini` about
@@ -354,7 +369,7 @@ nothing to configure in the agent. Undo anytime with `roger agent uninstall`.
 | `roger guard install` | Quiz on staged changes before every commit |
 | `roger update` | Refresh Roger's map of your code by hand |
 | `roger doctor` | Check this environment and print fixes for anything wrong |
-| `roger use ollama` / `roger use azure …` / `roger use foundry …` | Choose where the AI runs |
+| `roger use ollama` / `roger use local-server …` / `roger use azure …` / `roger use foundry …` | Choose where the AI runs |
 | `roger init` | Set up manually (bare `roger` does this for you) |
 
 ---
