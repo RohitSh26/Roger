@@ -64,6 +64,10 @@ pip install git+https://github.com/RohitSh26/Roger.git
 
 `pip` is Python's installer; this tells it to fetch Roger straight from GitHub.
 
+**Want `roger` available in every project, installed once?** See
+[docs/INSTALL.md](docs/INSTALL.md) for a system-wide setup (macOS, Windows,
+Linux, and others) that doesn't disappear when you switch projects.
+
 ---
 
 ## Using Roger (this is most of the manual)
